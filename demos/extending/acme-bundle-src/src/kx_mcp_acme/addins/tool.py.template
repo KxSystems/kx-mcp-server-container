@@ -1,0 +1,45 @@
+"""Copy-me template for a new Acme tool.
+
+To add a tool: copy this file to a new module ending in `.py` (this file is `*.py.template`, so
+native discovery — which globs `*.py` — never sees it; drop the `.template` suffix to activate it).
+Keep the `*_impl` function separate from the decorated entry point so tests can call the impl
+directly. The module-level standalone `@tool` decorator (FastMCP 3.x) attaches discovery metadata
+and returns the function unchanged; native filesystem discovery (the shared helper in kx-mcp-core)
+finds it and registers it onto the per-instance server. Read per-call config from the request
+Context (ctx.fastmcp, via config_from_ctx) — never a module global — to stay instance-safe.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastmcp import Context
+from fastmcp.tools import tool
+
+from ..settings import AcmeConfig
+from ..utils.acme import config_from_ctx, get_connection
+
+logger = logging.getLogger(__name__)
+
+
+def my_tool_impl(param: str, config: AcmeConfig | None = None) -> dict:
+    """Your tool logic here. Takes an explicit config so tests can call it directly."""
+    conn = get_connection(config or AcmeConfig())
+    # A real backend queries `conn` here; the demo stub serves canned rows.
+    logger.info("Processing my_tool request")
+    return conn.query(param)
+
+
+# Pick a descriptive, BARE tool name — the container supplies the `acme` qualifier at
+# mount(namespace="acme"). Discovery picks this up automatically; no registration function needed.
+@tool
+def my_tool(param: str, ctx: Context) -> dict:
+    """One-line summary shown to the model, then a fuller description.
+
+    Args:
+        param: What this parameter selects.
+
+    Returns:
+        The tool result (FastMCP 3.x serializes a dict for you).
+    """
+    return my_tool_impl(param, config=config_from_ctx(ctx))

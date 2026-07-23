@@ -1,0 +1,111 @@
+KDB SQL Query Guide
+
+Write ANSI-compliant SQL for kdb+ tables.
+
+IMPORTANT - Column Name Quoting:
+Always use double quotes around column names to avoid conflicts with SQL reserved words.
+Examples: "Close", "Open", "Date", "Time", "Group", "Order", "Key", "Value"
+
+Correct:   select avg("Close") from stocks;
+Incorrect: select avg(Close) from stocks;
+
+Basic Syntax:
+SELECT [DISTINCT] columns FROM table
+[LEFT|RIGHT|INNER|CROSS] JOIN table2 ON condition
+WHERE conditions
+GROUP BY columns
+HAVING conditions
+ORDER BY columns [ASC|DESC]
+LIMIT n
+
+Supported Features:
+
+SELECT Operations:
+- DISTINCT - unique values only
+- AS - column/table aliases
+- * and qualified column selection
+
+Aggregates: SUM, AVG, COUNT, MIN, MAX, FIRST, LAST, TOTAL
+- Support DISTINCT: COUNT(DISTINCT col)
+
+Joins: LEFT, RIGHT, INNER, CROSS
+- Nested joins supported
+- NATURAL, USING, LATERAL not implemented
+
+Filtering:
+- WHERE with =, <, >, BETWEEN, IN, EXISTS, IS NULL
+- LIKE uses standard ANSI SQL % wildcards (NOT q-style *)
+- Examples: WHERE "Symbol" LIKE 'BTC%', WHERE "Symbol" LIKE '%USD', WHERE "Symbol" LIKE '%USDT%'
+- No underscore (_) single character wildcards supported
+- Subqueries in comparisons and IN clauses
+
+Grouping:
+- GROUP BY with column names, ordinals, or expressions
+- HAVING for aggregate filtering
+
+Combining Queries: UNION [ALL], INTERSECT [ALL], EXCEPT [ALL]
+
+Advanced:
+- Common Table Expressions: WITH t AS (SELECT...) SELECT FROM t
+- Scalar and correlated subqueries
+- CASE expressions (simple and searched)
+- NULLIF, COALESCE
+- CAST function
+
+Data Types:
+- Numeric: INTEGER, SMALLINT, REAL, DOUBLE, FLOAT
+- String: CHARACTER, VARCHAR with LENGTH, SUBSTRING, UPPER, LOWER, POSITION
+- Date/Time: DATE, TIME, TIMESTAMP with CURRENT_DATE, LOCALTIME, LOCALTIMESTAMP
+
+Key Differences from Standard SQL:
+- Always quote column names with double quotes
+- LIKE uses standard ANSI SQL % wildcards
+- No UPDATE, DELETE, constraints, transactions, or privileges
+- Tables are in-memory (no persistence)
+- User-defined functions via .s.fs and .s.F
+
+Examples
+
+Financial data with quoted columns:
+select 
+    "Symbol",
+    avg("Open") as avg_open,
+    avg("High") as avg_high,
+    avg("Low") as avg_low,
+    avg("Close") as avg_close,
+    min("Date") as first_date,
+    max("Date") as last_date
+from stocks
+group by "Symbol";
+
+Basic query with aggregation:
+select "vendor", count(*) as trip_count, avg("fare") as avg_fare
+from trips
+where "payment_type" in ('cash', 'credit')
+group by "vendor"
+having count(*) > 100
+order by trip_count desc
+limit 10;
+
+Join with subquery:
+select t.*, cc."description"
+from trips t
+left join cash_credit cc on t."payment_type" = cc."payment_type"
+where t."fare" > (select avg("fare") from trips);
+
+CTE example:
+with daily_stats as (
+  select "Date", sum("fare") as total_fare, count(*) as trip_count
+  from trips group by "Date"
+)
+select * from daily_stats where total_fare > 1000;
+
+Pattern matching:
+select distinct "Symbol" from crypto where "Symbol" like '%USDT%';
+select * from crypto where "Symbol" like 'BTC%' or "Symbol" like '%USD';
+
+Date queries:
+select * from crypto
+where "Datetime" >= '2025-04-22T00:00:00'
+order by "Datetime" desc
+limit 100;

@@ -1,0 +1,123 @@
+[project]
+name = "kx-mcp-container"
+version = "0.1.0"
+description = "KX MCP composition container — a FastMCP 3.x parent that mounts pluggable backend bundles (kdb-x today, kdb.ai next)"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "kx-mcp-core",
+    "kx-mcp-kdbx",
+    "kx-mcp-kdbai",
+]
+
+[tool.uv]
+# The workspace root is just an aggregator — not itself a build target.
+package = false
+# kdbai-client pins pykx<4.0.0, but the kdb-x bundle needs pykx>=4 (KDB-X) and the whole container
+# runs in one process → one pykx. Override the upper bound: kdbai-client only touches pykx in qipc
+# mode, so this is a metadata conflict to bypass, not a runtime one (verify qipc against pykx 4).
+override-dependencies = ["pykx>=4.0.0.b4"]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+kx-mcp-core = { workspace = true }
+kx-mcp-kdbx = { workspace = true }
+kx-mcp-kdbai = { workspace = true }
+kx-auth-core = { workspace = true }
+kx-auth-cli = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=7.3.2,<8",
+    "pytest-mock",
+    "pytest-cov>=4.0.0,<5",
+    "coverage>=7.8.0",
+    "trio",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+    # Real type stubs for the libs that ship them, so mypy checks (not blanket-ignores) their use.
+    "pandas-stubs",
+    "types-PyYAML",
+    # The client-side CLI is a workspace member but not a container runtime dep — pull it into the dev
+    # env so `uv run kx ...` works and its tests are collected.
+    "kx-auth-cli",
+    # Tests mint RS256 tokens with PyJWT (verify_token validates them with joserfc — cross-library
+    # coverage). Declared here so the lean packages' tests don't rely on a transitive-via-fastmcp import.
+    "pyjwt",
+    # cryptography is the RSA backend used by PyJWT and FastMCP's JWTVerifier. Declared explicitly
+    # so the auth test suite owns its dependency rather than relying on a transitive import.
+    "cryptography",
+    # Used by the realidp/kdbai Keycloak provisioning scripts (keycloak_setup.py) — an ops/setup
+    # tool, not a package runtime dep, but `uv run` needs it resolvable from the workspace env.
+    "python-keycloak",
+]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "packages/kx-mcp-kdbx/tests",
+    "packages/kx-mcp-kdbai/tests",
+    "packages/kx-auth-core/tests",
+    "packages/kx-auth-cli/tests",
+    "tests",
+]
+# The example bundle is a composition/launcher test fixture, not a shipped backend or a workspace
+# package — it sits on the test path only so test_launcher can resolve `kx_mcp_example` by import.
+pythonpath = ["tests/fixtures/kx-mcp-example/src", "tests/deterministic"]
+# Exclude real-IdP tests from the default/CI run — they require a live Keycloak/Entra instance.
+# Run manually with: just test-keycloak
+addopts = "-m 'not realidp'"
+markers = [
+    "realidp: requires a live Identity Provider (Keycloak or Entra) — manual/local only",
+    "integration: spawns a real subprocess over the wire (deterministic, license-free)",
+    "kdbai: requires a live OAuth kdbai-db + Keycloak (registry-gated image) — manual/local only",
+    "kdbx: requires a live q process + Keycloak — manual/local only",
+]
+
+[tool.ruff]
+target-version = "py310"  # repo requires >=3.10
+
+[tool.ruff.lint]
+# Explicit copy of ruff's current default select — pins behavior across ruff upgrades.
+# Deliberately minimal for now (no import-sort / pyupgrade); E501 line-length stays unenforced.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.10"
+
+# Third-party libs with no py.typed marker and no stub package — silence import noise only.
+# (pandas + yaml get REAL stubs via pandas-stubs / types-PyYAML in the dev group.)
+# `realidp` is the in-repo test/demo harness imported via a runtime sys.path insert (public/demos),
+# so it isn't on mypy's module path — ignore its import rather than gate on the path hack.
+[[tool.mypy.overrides]]
+module = ["pykx.*", "kdbai_client.*", "openai.*", "sentence_transformers.*", "tiktoken.*", "realidp.*"]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+command_line = "-m pytest --junitxml=report.xml"
+branch = true
+dynamic_context = "test_function"
+source_pkgs = ["kx_mcp_kdbx", "kx_mcp_kdbai", "kx_mcp_core", "kx_auth_core", "kx_auth"]
+relative_files = true
+omit = [
+    "*/main.py",
+]
+
+[tool.coverage.paths]
+source = [
+    "packages/*/src",
+    "**/site-packages",
+]
+
+[tool.coverage.report]
+skip_empty = true
+skip_covered = false
+precision = 2
+
+[tool.coverage.html]
+directory = "htmlcov/coverage"
+show_contexts = true
+
+[tool.coverage.xml]
+output = "coverage.xml"

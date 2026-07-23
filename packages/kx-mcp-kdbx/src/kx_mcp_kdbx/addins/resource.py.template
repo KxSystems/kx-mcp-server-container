@@ -1,0 +1,58 @@
+"""
+Template for creating MCP server resources.
+
+Resources provide read-only access to data that can be referenced by tools and prompts.
+They are identified by URIs and can return various content types.
+
+To create a new resource module:
+1. Copy this file to a new module ending in `.py` (this file is `*.py.template`, so it is never
+   discovered — `discover_files` globs `*.py`; drop the `.template` suffix to activate it)
+2. Implement your resource logic in the *_impl functions
+3. Decorate the module-level entry point with the standalone @resource decorator
+4. The module will be automatically discovered and registered (see utils/discovery.py)
+
+Resource URI patterns:
+- Use consistent naming: "category://subcategory/item"
+- Examples: "database://tables", "files://config/{filename}", "api://status"
+- A URI template or function parameters make it a ResourceTemplate; otherwise a static Resource.
+- FastMCP 3.x serializes resource results to str/bytes — flatten List[TextContent] to text.
+"""
+
+import logging
+from typing import List
+
+from fastmcp.resources import resource
+from mcp.types import TextContent
+
+logger = logging.getLogger(__name__)
+
+
+async def example_static_resource_impl() -> List[TextContent]:
+    """
+    Implementation for a static resource that doesn't take parameters.
+    
+    Returns:
+        List[TextContent]: Resource content as text
+    """
+    try:
+        # Your resource logic here
+        content = "This is example static resource content"
+        
+        logger.info("Static resource accessed successfully")
+        return [TextContent(type="text", text=content)]
+        
+    except Exception as e:
+        logger.error(f"Error accessing static resource: {e}")
+        return [TextContent(
+            type="text", 
+            text=f"Error accessing resource: {str(e)}"
+        )]
+
+
+# Standalone @resource decorator — discovered and registered automatically. No params and no
+# URI template, so this is a static Resource. FastMCP 3.x serializes the result to str/bytes.
+@resource("example://static")
+async def example_static_resource() -> str:
+    """Static resource example - no parameters."""
+    items = await example_static_resource_impl()
+    return "\n".join(getattr(tc, "text", str(tc)) for tc in items)

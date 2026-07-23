@@ -1,0 +1,77 @@
+# Real-IdP harness — Entra ID kdbai-db backend
+#
+# A kdbai-db-only compose for the KDB.AI OAuth ACL lane under Microsoft Entra ID.
+# Unlike the Keycloak compose, there is NO local IdP service here — Entra is the
+# public IdP (login.microsoftonline.com), so this file only brings up the backend.
+#
+#   docker login registry.gitlab.com
+#   mkdir -p kdbai-data acl-data && chmod 777 kdbai-data acl-data
+#   set -a; source ../../envs/.env.entra; set +a
+#   KDB_LICENSE_B64=$(base64 < ~/.kx/kc.lic) docker compose up -d
+#
+# Then seed grants and run the suite (from the repo root):
+#   source tests/deterministic/realidp/envs/.env.entra
+#   uv run python tests/deterministic/realidp/setup/entra/seed.py
+#   just test-kdbai-entra
+#
+# BRIDGED NETWORKING (not network_mode: host). The Keycloak lane needs host mode so
+# kdbai-db can reach Keycloak at localhost:8080 and have the issuer URL match the
+# token's `iss`. Entra's issuer + JWKS are PUBLIC URLs (login.microsoftonline.com /
+# sts.windows.net) reachable from inside a bridged container, so there is no
+# localhost-issuer match to preserve — we map ports explicitly instead. This is the
+# portable/CI-friendly shape.
+#
+# Ports: 8081 = REST API (used by seed.py's external_token Session); 8082 = qipc
+# (used by the KA.* tests in qipc mode). Both are mapped so either path works.
+
+services:
+  kdbai-db:
+    # OAuth-enabled KDB.AI server (registry-gated image — requires docker login
+    # registry.gitlab.com and a kdb+ license in KDB_LICENSE_B64). Authenticates
+    # against the Entra tenant; the groups claim (Object IDs) drives ACL enforcement.
+    image: kdbai-db:latest
+    container_name: kdbai-db-entra
+    environment:
+      - KDB_LICENSE_B64=$KDB_LICENSE_B64
+
+      ## OAuth authentication (Microsoft Entra ID)
+      - AUTH_TYPE=oauth
+
+      # Matched against the "aud" claim. Under passthrough the container forwards the
+      # inbound token UNCHANGED, so this MUST equal the container's audience — the bare
+      # GUID client-id of the kdbai-service-mcp-agent app (v2 token; same app used for
+      # inbound). No separate resource app is needed (single-audience passthrough).
+      - OAUTH_CLIENT_ID=${ENTRA_CLIENT_ID}
+
+      # Entra-native claims: `tid` carries the tenant UUID; `groups` carries group
+      # Object IDs (enabled on the app registration by entra_setup.py).
+      - OAUTH_TENANT_CLAIM=tid
+      - OAUTH_GROUPS_CLAIM=groups
+
+      # Trusted issuers — both v1.0 and v2.0 are listed since Entra may issue either
+      # depending on the app's accessTokenAcceptedVersion. entra_setup.py sets v2.
+      - OAUTH_ISSUERS=https://sts.windows.net/${ENTRA_TENANT_ID}/,https://login.microsoftonline.com/${ENTRA_TENANT_ID}/v2.0
+
+      ## System admin — token with tid=<tenant> + groups containing the manager-admin
+      # Object ID gets system_admin (bypasses ACL, manages grants cross-tenant).
+      - ACL_SYSTEM_ADMIN_TENANT=${ENTRA_TENANT_ID}
+      - ACL_SYSTEM_ADMIN_GROUP=${ENTRA_GROUP_MANAGER_ADMIN}
+
+    ports:
+      - "8081:8081"   # REST API (seed.py)
+      - "8082:8082"   # qipc (KA.* tests)
+
+    volumes:
+      - ./kdbai-data:/tmp/kx/data
+      # Persist ACL grants across restarts.
+      - ./acl-data:/tmp/acl
+
+    # Health = the REST gateway (8081) is up and answering. /healthz is OAuth-protected,
+    # so it returns 401 unauthenticated — that 401 still proves the service is serving,
+    # hence no `-f` (which would treat 401 as failure). 8082 is the qipc port (no HTTP).
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null http://localhost:8081/healthz || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s

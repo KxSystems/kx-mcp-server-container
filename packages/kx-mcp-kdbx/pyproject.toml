@@ -1,0 +1,37 @@
+[project]
+name = "kx-mcp-kdbx"
+dynamic = ["version"]
+description = "KDB-X backend extension (bundle) for the kx-mcp composition container — exposes build_server() -> FastMCP"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "fastmcp>=3,<4",
+    "pykx>=4.0.0.b4",
+    "pydantic-settings",
+    "packaging",
+    # Identity assertion: the fastmcp-free claims->q-dict projection (shared wire format).
+    "kx-auth-core",
+    # Capability check: the SQL tool's `@authorize` decorator is imported from kx_mcp_core.auth at
+    # tool-module load (always, during discovery) — so the bundle depends on the container package.
+    "kx-mcp-core",
+    # Optional embedding extras (mirror the standalone server): sentence_transformers, openai, tiktoken
+]
+
+# Mount-only: no standalone console script. The container (kx-mcp-core) owns serving — run the
+# kdb-x backend via `uv run kx-mcp --bundles kdbx`. The bundle exposes only build_server() -> FastMCP.
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+# Version is derived from git tags (lockstep across the workspace); in CI the build job pins it
+# from the tag via SETUPTOOLS_SCM_PRETEND_VERSION. root="../.." finds the repo .git from this
+# package subdir; fallback-version keeps non-tag / no-git builds from failing.
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+raw-options = { root = "../.." }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kx_mcp_kdbx"]

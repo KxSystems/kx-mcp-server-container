@@ -1,0 +1,66 @@
+{
+  "keycloak": {
+    "base_url": "http://localhost:8080/",
+    "admin_user": "admin",
+    "admin_password": "admin",
+    "client_id": "admin-cli"
+  },
+  "client": {
+    "client_id": "kdbai-service",
+    "public_client": true
+  },
+  "tenants": {
+    "quants": {
+      "token_settings": {
+        "access_token_lifespan_seconds": 900
+      },
+      "groups": ["admin", "trader", "viewer", "service"],
+      "users": [
+        {
+          "username": "alice",
+          "password": "alice123",
+          "groups": ["viewer", "trader"]
+        },
+        {
+          "username": "bob",
+          "password": "bob123",
+          "groups": ["viewer"]
+        }
+      ],
+      "service_client": {
+        "client_id": "kdbai-service-worker",
+        "public_client": false,
+        "secret": "kdbai-service-worker-secret",
+        "service_accounts_enabled": true,
+        "service_account_groups": ["service"],
+        "audience_override": "kdbai-service"
+      }
+    },
+    "risk": {
+      "token_settings": {
+        "access_token_lifespan_seconds": 900
+      },
+      "groups": ["admin", "viewer"],
+      "users": [
+        {
+          "username": "charlie",
+          "password": "charlie123",
+          "groups": ["viewer"]
+        }
+      ]
+    },
+    "manager": {
+      "token_settings": {
+        "access_token_lifespan_seconds": 900
+      },
+      "groups": ["admin"],
+      "users": [
+        {
+          "username": "root",
+          "password": "root123",
+          "groups": ["admin"]
+        }
+      ]
+    }
+  }
+}

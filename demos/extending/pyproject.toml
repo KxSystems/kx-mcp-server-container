@@ -1,0 +1,42 @@
+# A standalone *consumer* project — NOT a member of the kx-mcp-container uv workspace.
+# It stands alone the way a downstream repo would: it pulls the container's core modules as wheels
+# from a local index (the wheels you build from the public repo source — see README.md § Build),
+# and keeps its own backend *bundle* (Acme) as a local source project it can iterate on.
+[project]
+name = "consumer-acme-mcp"
+version = "0.1.0"
+description = "Example downstream consumer: an Acme-only MCP server assembled from locally-built kx-mcp wheels"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    # Resolved from the local wheel index below (built from the public repo source).
+    "kx-mcp-core",   # the container assembly seam (make_parent / try_mount_bundle) + the kx-mcp launcher
+    "kx-mcp-acme",   # the backend bundle — here overridden to a local source project (see [tool.uv.sources])
+    # kx-auth-core arrives transitively (both kx-mcp-core and kx-mcp-acme reach it) — also from the local index.
+    #
+    # Deps are intentionally UNPINNED here: wheels built from an untagged checkout carry the 0.0.0
+    # fallback version. A real consumer pins to a released semver (e.g. "kx-mcp-core==0.1.0") once a
+    # release tag is cut (the tag drives all packages' versions in lockstep).
+]
+
+# A local *flat* index over the wheels you built from the public repo (`uv build --all-packages
+# --wheel` → ../../dist). PyPI stays the default (fastmcp/pydantic/… resolve from there); this index
+# supplies the kx-* wheels. When published wheels exist, swap this for the publishing index — the rest
+# of the file is unchanged. (See README.md; external/PyPI publication is not yet committed.)
+[[tool.uv.index]]
+name = "kx-local"
+url = "../../dist"
+format = "flat"
+
+# Keep the Acme bundle as a LOCAL source project: override the index resolution of kx-mcp-acme with an
+# editable path source. So kx-mcp-core + kx-auth-core come from the local wheel index, while
+# kx-mcp-acme builds from source — the "draft bundle" you iterate on.
+[tool.uv.sources]
+kx-mcp-acme = { path = "acme-bundle-src", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# This consumer project ships no importable package of its own — server.py / check_health.py are scripts.
+bypass-selection = true

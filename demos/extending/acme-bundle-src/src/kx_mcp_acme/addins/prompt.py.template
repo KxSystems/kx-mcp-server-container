@@ -1,0 +1,33 @@
+"""Copy-me template for a new Acme prompt.
+
+Prompts are reusable, parameterized prompt templates a model can invoke.
+
+To add a prompt: copy this file to a new module ending in `.py` (this file is `*.py.template`, so
+it is never discovered — `discover_files` globs `*.py`; drop the `.template` suffix to activate it).
+Keep the `*_impl` function separate, decorate the module-level entry point with the standalone
+`@prompt` decorator, and native discovery (the shared kx-mcp-core helper) registers it. The name is
+bare; the container supplies the `acme` qualifier at mount(namespace="acme").
+"""
+
+import logging
+
+from fastmcp.prompts import prompt
+
+logger = logging.getLogger(__name__)
+
+
+def example_prompt_impl(subject: str, output_format: str = "detailed") -> str:
+    """Build the prompt text. Kept separate so tests can call it directly."""
+    logger.info("Generating example prompt for subject: %s", subject)
+    return (
+        f"You are an expert analyst. Analyze {subject}.\n"
+        f"Output format: {output_format}.\n"
+        "Use evidence to support your analysis and be specific in your recommendations."
+    )
+
+
+# Standalone @prompt decorator — discovered and registered automatically.
+@prompt
+def example_prompt(subject: str, output_format: str = "detailed") -> str:
+    """Generate an analysis prompt for any subject."""
+    return example_prompt_impl(subject, output_format)

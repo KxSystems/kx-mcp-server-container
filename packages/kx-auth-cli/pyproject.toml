@@ -1,0 +1,39 @@
+[project]
+name = "kx-auth-cli"
+dynamic = ["version"]
+description = "kx auth — the agent-facing auth CLI for the kx-mcp control plane. Distributed and run where the agent/client runs; verifies bearers via the lean kx-auth-core (no fastmcp)."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10,<3.14"
+# The lean shared core (verify + the outbound exchange seam) — deliberately NO fastmcp, so the
+# client-side install stays light. `httpx` is a direct dep for `login`'s RFC 9728/8628 discovery +
+# device-code flow (the CLI talks straight to the authorization server); the CLI otherwise uses
+# stdlib argparse.
+dependencies = [
+    "kx-auth-core",
+    "httpx",
+]
+
+# `kx auth assert --connect` runs the qIPC bind handshake against a kdb+ target, which needs PyKX.
+# Kept optional so the base CLI stays light + fastmcp-free; project-only assertion needs no extra.
+[project.optional-dependencies]
+qipc = ["pykx>=4.0.0.b4"]
+
+[project.scripts]
+# The `kx` umbrella; the `auth` group hosts introspect / login / exchange / assert.
+kx = "kx_auth_cli.cli:main"
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+# Version is derived from git tags (lockstep across the workspace); in CI the build job pins it
+# from the tag via SETUPTOOLS_SCM_PRETEND_VERSION. root="../.." finds the repo .git from this
+# package subdir; fallback-version keeps non-tag / no-git builds from failing.
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+raw-options = { root = "../.." }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kx_auth_cli"]

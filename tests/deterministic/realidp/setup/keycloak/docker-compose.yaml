@@ -1,0 +1,116 @@
+# Real-IdP harness — docker compose services
+#
+# Default (no profile): keycloak + postgres only — sufficient for all inbound-auth
+# assertions. The container mounts the license-free `example` bundle; no backend DB needed.
+#
+#   docker compose up -d
+#
+# With backends profile: adds kdbai-db (OAuth) — for the KA.* ACL-persona authz suite
+# (test_kdbai_acl.py driving --bundles kdbai against a real OAuth KDB.AI + real OIDC tokens).
+# Requires: docker login registry.gitlab.com + KDB_LICENSE_B64 env var set.
+#
+#   KDB_LICENSE_B64=$(base64 ~/.kx/kc.lic) docker compose --profile backends up -d
+#
+# kdbai-db runs with network_mode: host (Linux only) so that the issuer URL in the token
+# (http://localhost:8080/realms/<realm>) exactly matches the URL kdbai-db uses to fetch
+# JWKS from Keycloak. Bridged networking would require an explicit OAUTH_ISSUERS entry
+# pointing at the container hostname, which would not match what the MCP container puts in
+# the bearer.
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    command: start-dev --db postgres
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: localhost
+      KC_HTTP_PORT: 8080
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health/ready || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  # ---------------------------------------------------------------------------
+  # Backend services — gated behind the `backends` profile.
+  # Not started by a plain `docker compose up -d`; opt in with --profile backends.
+  # ---------------------------------------------------------------------------
+
+  kdbai-db:
+    # OAuth-enabled KDB.AI server (registry-gated image — requires docker login registry.gitlab.com
+    # and a kdb+ license in KDB_LICENSE_B64). Authenticates via the Keycloak realms provisioned
+    # above; groups claim drives ACL enforcement (trader/viewer/admin per tenant).
+    image: kdbai-db:latest
+    profiles:
+      - backends
+    environment:
+      - KDB_LICENSE_B64=$KDB_LICENSE_B64
+
+      ## OAuth authentication
+      # Enables JWT-based OAuth authentication for all API requests.
+      - AUTH_TYPE=oauth
+
+      # Matched against the "aud" claim in the JWT. Ensures tokens were issued
+      # specifically for this service.
+      - OAUTH_CLIENT_ID=kdbai-service
+
+      # JWT claims that carry tenant and group identifiers (hardcoded by Keycloak mappers).
+      - OAUTH_TENANT_CLAIM=tenant
+      - OAUTH_GROUPS_CLAIM=groups
+
+      # Trusted token issuers. Values must exactly match the `iss` claim in tokens
+      # (i.e. the URL the token was requested from). kdbai-db also fetches JWKS from
+      # these URLs, so they must be reachable from the container. With network_mode: host
+      # `localhost` resolves correctly.
+      - OAUTH_ISSUERS=http://localhost:8080/realms/quants,http://localhost:8080/realms/risk,http://localhost:8080/realms/manager
+
+      ## System admin
+      # Users whose token has tenant=manager + group=admin get system_admin access,
+      # bypassing all ACL checks and able to manage grants across all tenants.
+      - ACL_SYSTEM_ADMIN_TENANT=manager
+      - ACL_SYSTEM_ADMIN_GROUP=admin
+
+    volumes:
+      - ./kdbai-data:/tmp/kx/data
+      # Persist ACL grants across restarts.
+      - ./acl-data:/tmp/acl
+
+    # Host network so kdbai-db reaches Keycloak at localhost:8080, matching the issuer URL
+    # in tokens. Port mapping is not possible with network_mode: host; kdbai-db binds
+    # directly on the host's port 8082.
+    network_mode: host
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/healthz || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  pg-data:

@@ -1,0 +1,24 @@
+# The "Acme" backend bundle — the local source project this consumer iterates on.
+#
+# In a real downstream repo this would be your own bundle's checkout (or a git submodule); here it
+# lives beside the consumer project so the demo is runnable in-place. It is a normal backend bundle:
+# a package `kx_mcp_acme` exposing `build_server() -> FastMCP` (the extension contract — see
+# ../../../docs/extending.md). Deliberately minimal (no real backend, no pykx, no licence) so the
+# whole demo builds and runs anywhere.
+[project]
+name = "kx-mcp-acme"
+version = "0.1.0"
+description = "Acme — a minimal example backend bundle for the consumer-build demo"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "fastmcp>=3,<4",
+    "kx-mcp-core",        # for current_principal() — proving the inbound principal crosses the mount boundary
+    "pydantic-settings",  # for the ACME_DB_* config fragment (settings.py)
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kx_mcp_acme"]

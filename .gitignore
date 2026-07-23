@@ -1,0 +1,26 @@
+__pycache__*
+*.py[cod]
+*$py.class
+.venv
+.env
+.coverage
+coverage.xml
+report.xml
+out
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+htmlcov/
+
+# Real-IdP env files contain credentials — commit only the .example templates
+envs/.env.*
+!envs/.env.*.example
+
+# Root-level launcher env files reference live IdP config/credentials — never commit
+/.env.*
+
+# Real-IdP compose runtime state (bind-mounted kdbai DB + ACL dirs) — never commit
+tests/deterministic/realidp/setup/*/kdbai-data/
+tests/deterministic/realidp/setup/*/acl-data/

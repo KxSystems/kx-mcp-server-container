@@ -1,0 +1,43 @@
+[project]
+name = "kx-mcp-kdbai"
+dynamic = ["version"]
+description = "KDB.AI backend extension (bundle) for the kx-mcp composition container — exposes build_server() -> FastMCP"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "fastmcp>=3,<4",
+    "kdbai-client>=2.0.0",
+    # Not imported directly here: pykx is transitive via kdbai-client (qipc mode only). Declared to
+    # hold a floor; the root [tool.uv] override forces pykx>=4 for the workspace (see root pyproject).
+    "pykx>=2.2.2",
+    "pydantic-settings",
+    "pyyaml",  # REST-mode OAuth: write the external_token oauth config_file the SDK reads
+    "numpy",
+    "pandas",
+    # Outbound: the service_account/passthrough token-exchange seam (OutboundConfig, exchange)
+    # is imported from the shared, fastmcp-free auth core in settings.py + utils/kdbai_auth.py.
+    "kx-auth-core",
+    # The container package — the addins package imports the shared `register_components` discovery
+    # helper from kx_mcp_core (lifted out of the kdb-x bundle now that kdbai is a second consumer).
+    "kx-mcp-core",
+    # Optional embedding extras: sentence_transformers, openai, tiktoken
+]
+
+# Mount-only: no standalone console script. The container (kx-mcp-core) owns serving; the bundle
+# exposes only build_server() -> FastMCP. Run it via `uv run kx-mcp --bundles kdbai`.
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+# Version is derived from git tags (lockstep across the workspace); in CI the build job pins it
+# from the tag via SETUPTOOLS_SCM_PRETEND_VERSION. root="../.." finds the repo .git from this
+# package subdir; fallback-version keeps non-tag / no-git builds from failing.
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+raw-options = { root = "../.." }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kx_mcp_kdbai"]

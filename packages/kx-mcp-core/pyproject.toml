@@ -1,0 +1,34 @@
+[project]
+name = "kx-mcp-core"
+dynamic = ["version"]
+description = "Assembly layer for the kx-mcp composition container (FastMCP 3.x). Eventual home of the deferred auth/authz/identity control plane."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "fastmcp>=3,<4",
+    "pydantic-settings",
+    # The static capability adapter reads a YAML grant store (KX_MCP_AUTHZ=static).
+    "pyyaml",
+    # The shared, fastmcp-free auth core (config contract + verifier) the kx auth CLI also depends on.
+    "kx-auth-core",
+]
+
+[project.scripts]
+# Thin, optional zero-code launcher: `kx-mcp --bundles kdbx,example`
+kx-mcp = "kx_mcp_core.launcher:main"
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+# Version is derived from git tags (lockstep across the workspace); in CI the build job pins it
+# from the tag via SETUPTOOLS_SCM_PRETEND_VERSION. root="../.." finds the repo .git from this
+# package subdir; fallback-version keeps non-tag / no-git builds from failing.
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+raw-options = { root = "../.." }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kx_mcp_core"]

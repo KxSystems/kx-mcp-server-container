@@ -1,0 +1,35 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create GitHub Release from tag commit message
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # publish-release.sh stamps the squashed commit body with the
+          # CHANGELOG section for this version; reuse it verbatim as notes.
+          git log -1 --format=%b "$TAG" > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ]; then
+            echo "release.yml: tag commit body is empty — refusing to create empty release" >&2
+            exit 1
+          fi
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes-file /tmp/notes.md \
+            --verify-tag

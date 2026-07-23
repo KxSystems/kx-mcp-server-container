@@ -1,0 +1,70 @@
+# Test personas for the real-IdP harness.
+#
+# ``tenant`` is the Keycloak realm and drives the token ``iss`` claim
+# (``{KC_BASE}/realms/{tenant}``). A container configured for the ``quants``
+# issuer will reject tokens from ``risk`` — that rejection is the basis of
+# the wrong-issuer test (2.41).
+#
+# ``groups`` annotations are informational — they document what groups
+# Keycloak will embed in the token via the group-membership mapper. The
+# actual groups come from Keycloak at token-mint time; they are not sent
+# by the test harness.
+#
+# Credentials (username / password) are local-only test values committed
+# alongside the config; they only ever reach a local-only Keycloak that
+# never holds real data.
+#
+# Each persona optionally carries an ``entra:`` block used when
+# ``AUTH_PROVIDER=entra``. The ``${VAR}`` syntax is expanded from the
+# environment at token-acquisition time (see EntraTokenProvider._resolve).
+# Entra passwords are NEVER committed — inject them via ENTRA_PASSWORD_*
+# env vars (filled in .env.entra, gitignored) before running just test-entra.
+
+personas:
+  P-ROOT:
+    tenant: manager
+    username: root
+    password: root123
+    groups: [admin]
+    description: Manager realm root — system_admin in KDB.AI (bypasses all ACL checks)
+    entra:
+      flow: password
+      username: root@${ENTRA_DOMAIN}
+      password: ${ENTRA_PASSWORD_ROOT}
+
+  P-Q-ALICE:
+    tenant: quants
+    username: alice
+    password: alice123
+    groups: [viewer, trader]
+    description: Quants analyst with trader + viewer groups — DB-read grant via viewer membership
+    entra:
+      flow: password
+      username: alice@${ENTRA_DOMAIN}
+      password: ${ENTRA_PASSWORD_ALICE}
+
+  P-Q-BOB:
+    tenant: quants
+    username: bob
+    password: bob123
+    groups: [viewer]
+    description: Quants viewer-only — sees empty tables where alice sees rows (KA.2 headline)
+    entra:
+      flow: password
+      username: bob@${ENTRA_DOMAIN}
+      password: ${ENTRA_PASSWORD_BOB}
+
+  P-R-CHARLIE:
+    tenant: risk
+    username: charlie
+    password: charlie123
+    groups: [viewer]
+    description: Risk team viewer — different realm → different issuer → rejected by a quants-configured container (2.41)
+    entra:
+      # Second Entra tenant (wrong-issuer persona).
+      # Set ENTRA_TENANT_ID_RISK + ENTRA_DOMAIN_RISK + ENTRA_PASSWORD_CHARLIE in .env.entra
+      # to activate test 2.41 under Entra. Leave blank (or unset) to skip it.
+      flow: password
+      tenant_id: ${ENTRA_TENANT_ID_RISK}
+      username: charlie@${ENTRA_DOMAIN_RISK}
+      password: ${ENTRA_PASSWORD_CHARLIE}

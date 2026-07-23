@@ -1,0 +1,91 @@
+"""
+Template for creating MCP server prompts.
+
+Prompts provide reusable, parameterized prompt templates that can be used by AI models.
+They help standardize common prompt patterns and make them easily accessible.
+
+To create a new prompt module:
+1. Copy this file to a new module ending in `.py` (this file is `*.py.template`, so it is never
+   discovered — `discover_files` globs `*.py`; drop the `.template` suffix to activate it)
+2. Implement your prompt logic in the *_impl functions
+3. Decorate the module-level entry point(s) with the standalone @prompt decorator
+4. The module will be automatically discovered and registered (the shared kx-mcp-core helper)
+
+Prompt design best practices:
+- Make prompts specific and actionable
+- Include clear instructions and expected output format
+- Use parameters to make prompts reusable
+- Provide examples when helpful
+- Structure output with clear sections (Executive Summary, Analysis, etc.)
+"""
+
+import logging
+
+from fastmcp.prompts import prompt
+
+logger = logging.getLogger(__name__)
+
+
+async def example_analysis_prompt_impl(
+    subject: str,
+    focus_area: str = "general",
+    output_format: str = "detailed"
+) -> str:
+    """
+    Generate a comprehensive analysis prompt.
+
+    Args:
+        subject: The main subject to analyze
+        focus_area: Specific area to focus the analysis on
+        output_format: Format for the output (detailed, summary, bullet_points)
+
+    Returns:
+        str: The generated prompt text
+    """
+    try:
+        focus_instructions = {
+            "financial": "Focus on financial performance, revenue trends, cash flow, and risks.",
+            "strategic": "Focus on strategic positioning, competitive advantages, and market opportunities.",
+            "general": "Cover key performance indicators, trends, strengths/weaknesses, and recommendations.",
+        }
+        format_instructions = {
+            "detailed": "Structure with: Executive Summary, Key Findings, Detailed Analysis, Recommendations, Conclusion.",
+            "summary": "Provide Key Insights (3-5), Critical Issues, and Top Recommendations (2-3).",
+            "bullet_points": "Present findings, issues, and recommendations as concise bullet points.",
+        }
+
+        focus_instruction = focus_instructions.get(focus_area, focus_instructions["general"])
+        format_instruction = format_instructions.get(output_format, format_instructions["detailed"])
+
+        generated = f"""
+You are an expert analyst tasked with analyzing {subject}.
+
+{focus_instruction}
+
+{format_instruction}
+
+Use data and evidence to support your analysis. Be specific and actionable in your recommendations.
+
+Subject for Analysis: {subject}
+Focus Area: {focus_area.replace('_', ' ').title()}
+Output Format: {output_format.replace('_', ' ').title()}
+        """.strip()
+
+        logger.info(f"Generated analysis prompt for subject: {subject}")
+        return generated
+
+    except Exception as e:
+        logger.error(f"Error generating analysis prompt: {e}")
+        return f"Error generating prompt: {str(e)}"
+
+
+# Standalone @prompt decorator — discovered and registered automatically. Bare name; the container
+# supplies the `kdbai` qualifier at mount(namespace="kdbai").
+@prompt
+async def example_analysis(
+    subject: str,
+    focus_area: str = "general",
+    output_format: str = "detailed"
+) -> str:
+    """Generate a comprehensive analysis prompt for any subject."""
+    return await example_analysis_prompt_impl(subject, focus_area, output_format)

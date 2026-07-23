@@ -1,0 +1,33 @@
+"""Copy-me template for a new Acme resource.
+
+Resources provide read-only, URI-addressed data that tools and prompts can reference.
+
+To add a resource: copy this file to a new module ending in `.py` (this file is `*.py.template`, so
+it is never discovered — `discover_files` globs `*.py`; drop the `.template` suffix to activate it).
+Keep the `*_impl` function separate, decorate the module-level entry point with the standalone
+`@resource` decorator, and native discovery (the shared kx-mcp-core helper) registers it.
+
+URI patterns: "category://subcategory/item" (e.g. "acme://widgets", "acme://widgets/{kind}").
+A URI template or function parameters make it a ResourceTemplate; otherwise a static Resource.
+FastMCP 3.x serializes resource results to str/bytes — return text, not List[TextContent].
+"""
+
+import logging
+
+from fastmcp.resources import resource
+
+logger = logging.getLogger(__name__)
+
+
+def example_static_resource_impl() -> str:
+    """Your resource logic here; returns the resource body as text."""
+    logger.info("Static resource accessed")
+    return "This is example static resource content"
+
+
+# Standalone @resource decorator — discovered and registered automatically. No params and no URI
+# template, so this is a static Resource. Bare URI; the mount namespace does not rewrite it.
+@resource("acme://example")
+def example_static_resource() -> str:
+    """Static resource example - no parameters."""
+    return example_static_resource_impl()

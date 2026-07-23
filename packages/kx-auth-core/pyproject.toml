@@ -1,0 +1,31 @@
+[project]
+name = "kx-auth-core"
+dynamic = ["version"]
+description = "Lean, fastmcp-free shared core for kx auth: the KX_MCP_AUTH config contract + a joserfc verifier, depended on by both the container (kx-mcp-core) and the client-side kx auth CLI."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10,<3.14"
+# Deliberately NO fastmcp here — this package is distributed and run where the agent/client runs.
+# joserfc is the exact JOSE library FastMCP's JWTVerifier uses under the hood, so verification stays
+# one implementation; cryptography/httpx back the static-PEM and JWKS paths respectively.
+dependencies = [
+    "joserfc>=1.1.0",
+    "cryptography>=45.0.1",
+    "httpx<1.0,>=0.28.1",
+    "pydantic-settings",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+# Version is derived from git tags (lockstep across the workspace); in CI the build job pins it
+# from the tag via SETUPTOOLS_SCM_PRETEND_VERSION. root="../.." finds the repo .git from this
+# package subdir; fallback-version keeps non-tag / no-git builds from failing.
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0"
+raw-options = { root = "../.." }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kx_auth_core"]
