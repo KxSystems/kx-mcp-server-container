@@ -6,7 +6,12 @@ from kx_mcp_kdbx.addins.kdbx_run_sql_query import run_query_impl
 
 import importlib
 import kx_auth_core.authz as _authz_registry
-from kx_mcp_core.auth import AuthorizationDenied, AuthzSettings, configure_authz
+from kx_mcp_core.auth import (
+    AuthorizationDenied,
+    AuthzSettings,
+    configure_authz,
+    current_authz_decision,
+)
 from kx_auth_core.authz import AuthzDecision, register_authz_adapter
 
 # `kx_mcp_core.auth.authorize` the attribute is the re-exported *function* (it shadows the submodule),
@@ -199,6 +204,32 @@ class TestSqlToolCapabilityDecorator:
 
         assert result['status'] == 'success'
         assert result['data'] == rows
+
+    @pytest.mark.anyio
+    async def test_static_policy_allows_real_kdbx_query_without_kx_auth(
+        self, mocker, tmp_path
+    ):
+        """The real static adapter gates the shipped `query` capability entirely in Python."""
+        policy = tmp_path / "capability-policy.yaml"
+        policy.write_text("kdbx:\n  query: [analyst, admin]\n")
+        configure_authz(AuthzSettings(mode="static", policy_file=str(policy)))
+        mocker.patch.object(
+            _authorize_mod,
+            "current_principal",
+            return_value=Mock(client_id="kx-mcp", claims={"sub": "alice", "groups": ["analyst"]}),
+        )
+        rows = [{'sym': 'AAPL', 'price': 187.45}]
+        conn = self._mock_conn(mocker, rows)
+
+        result = await run_query_impl("SELECT * FROM trades", config=Mock(data_gate=False))
+
+        assert result['status'] == 'success'
+        assert result['data'] == rows
+        decision = current_authz_decision.get()
+        assert decision is not None
+        assert decision.allowed is True
+        assert decision.adapter == "static"
+        conn.assert_called_once()  # a single .s.e call -> no q-side .kx.auth round-trip
 
     @pytest.mark.anyio
     async def test_deny_raises_authorization_denied_before_query(self, mocker):

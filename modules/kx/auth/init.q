@@ -27,8 +27,16 @@
 / the q skill) — every blank comment line below carries a trailing "." on purpose.
 
 / ============================ private state ============================
-/ Per-handle principal store: connection handle (.z.w) -> projected principal dict. One entry per
-/ open qIPC handle; cleared on open/close once activate[] has wired the .z handlers.
+/ Per-handle principal store: connection handle (.z.w) -> a ONE-ROW TABLE wrapping the projected
+/ principal dict. One entry per open qIPC handle; cleared on open/close once activate[] has wired the
+/ .z handlers. Read an entry back with `first` (see current[]).
+/ .
+/ That wrapping enlist is LOAD-BEARING. A dict whose values are conforming *dicts* IS a keyed table to
+/ q, so storing principals directly makes `bound,(enlist w)!enlist principal` a COLUMN-WISE upsert
+/ rather than a replacement. Two ways that bites: rebinding a NARROWER principal on a live handle
+/ keeps the previous one's extra fields (a stale `tenant` outliving a token refresh, so a policy
+/ authorises on stale identity), and binding a narrower principal on a SECOND handle 'mismatch'es
+/ outright. Storing one-row TABLES keeps the value list general, so each handle is replaced WHOLESALE.
 bound:(`int$())!();
 
 / Request-scoped principal for the HTTP path (.z.ph/.z.pp). Unlike qIPC — where one connection = one
@@ -100,13 +108,17 @@ canon:{[p]
 
 promote:{[p]
   c:$[`claims in key p; p`claims; ()!()];
+  / groups: prefer a top-level value, else extract from claims (the promotion proper). Done FIRST, and
+  / as a dict JOIN rather than an index-assign, which is load-bearing: an all-atoms principal (e.g.
+  / `sub`iss!(`a;`b)) has a uniform TYPED value list, and index-assigning a symbol VECTOR into one
+  / 'type's. Joining a vector-valued dict widens the value list to a general list, so every assignment
+  / below is then safe. `groups` is always set, so leading with it costs nothing.
+  p:p,(enlist `groups)!enlist $[`groups in key p; asSyms p`groups; extractGroups c];
   / scalar identity fields -> symbols (idempotent — PyKX already symbolised them over qIPC)
   sf:`sub`client`iss inter key p;
   p[sf]:asSym each p sf;
   if[`aud in key p; p[`aud]:asSyms p`aud];
   if[`scopes in key p; p[`scopes]:asSyms p`scopes];
-  / groups: prefer a top-level value, else extract from claims (the promotion proper)
-  p[`groups]:$[`groups in key p; asSyms p`groups; extractGroups c];
   / tenant: prefer top-level, else the configured claim
   t:$[`tenant in key p; p`tenant; (count claimPaths`tenant) and 99h=type c; dig[c; claimPaths`tenant]; (::)];
   if[not (::)~t; p[`tenant]:asSym t];
@@ -120,16 +132,20 @@ promote:{[p]
 / authorization policy WHO may assert — an S/A/R decision with the CALLER's login (.z.u) as subject
 / and (`assert;`identity) as action/resource (default-deny, since `policy` is deny-all until set).
 / This runs pre-bind, so it consults `policy` directly — not authorize[]/require[], which need an
-/ already-bound principal. On allow, promotes (canonicalises) and stores. Idempotent per handle.
+/ already-bound principal. On allow, promotes (canonicalises) and stores. Idempotent per handle, and a
+/ re-bind on a live handle REPLACES the principal wholesale — no field of the previous one survives.
 bind:{[principal]
   caller:(enlist `sub)!enlist .z.u;
   if[not policy[caller; `assert; `identity];
     '"denied: caller ",string[.z.u]," not permitted to assert identity (grant `assert on `identity via setPolicy)"];
-  bound::bound,(enlist .z.w)!enlist promote principal; };
+  / the inner enlist wraps the principal as a one-row table — see the `bound` comment for why that is
+  / what makes this a wholesale replacement instead of a column-wise upsert.
+  bound::bound,(enlist .z.w)!enlist enlist promote principal; };
 
 / The principal in effect: the per-request HTTP principal if one is set, else the one bound to this
-/ qIPC handle, else the unbound sentinel (::). One accessor serves both transports.
-current:{[] $[not (::)~reqPrincipal; reqPrincipal; .z.w in key bound; bound .z.w; (::)]};
+/ qIPC handle, else the unbound sentinel (::). One accessor serves both transports. `first` unwraps the
+/ one-row table `bound` stores each principal as.
+current:{[] $[not (::)~reqPrincipal; reqPrincipal; .z.w in key bound; first bound .z.w; (::)]};
 
 / 1b iff a present, unexpired principal is in effect (qIPC handle or HTTP request). `exp` is a q
 / timestamp (canon), so compare it directly to now. No `exp` -> treated as non-expiring.

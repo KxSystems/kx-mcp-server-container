@@ -24,6 +24,7 @@ def test_app_settings_db_only(app_settings):
     assert app_settings.db.port == KDBConfig().port
     assert app_settings.db.timeout == 1
     assert app_settings.db.retry == 2
+    assert app_settings.db.aimeta_cache_ttl == 300
 
 
 def test_db_config_frozen(app_settings):
@@ -44,6 +45,12 @@ def test_env_variables_with_mock(mocker):
 def test_data_gate_defaults_off(app_settings):
     """The data gate is opt-in — default off preserves identity-assertion behavior byte-for-byte."""
     assert app_settings.db.data_gate is False
+
+
+def test_aimeta_cache_can_be_disabled_but_not_negative():
+    assert KDBConfig(aimeta_cache_ttl=0).aimeta_cache_ttl == 0
+    with pytest.raises(Exception):
+        KDBConfig(aimeta_cache_ttl=-1)
 
 
 def test_data_gate_requires_assert_identity():

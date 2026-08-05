@@ -46,8 +46,9 @@ async def table_deep_dive_prompt_impl(
         prompt = f"""
 You are a data analyst conducting an in-depth analysis of the table: {table_name}
 
-First, examine the table structure and sample data to understand its content and characteristics.
-Use the table-specific resources to get detailed information about this table.
+First, read tables://kdbx/{table_name} and examine its metadata-contract tier, semantic column
+descriptions, references, live state, and sample data. Follow semanticType through references when
+the user's terms need resolving to database keys, and use foreignRef rather than guessing joins.
 Use kdbx_sql_query_guidance resource for query syntax.
 
 {analysis_instruction.strip()}

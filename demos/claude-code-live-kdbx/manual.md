@@ -30,6 +30,11 @@ cd /path/to/kx-mcp-server-container   # if you aren't already there
 
 - `q` (KDB-X), `uv`, `just`, and Claude Code on PATH.
 - The `kx.auth` module on the q module path: `just install-modules`.
+- The optional `kx.aimeta` module on the q module path to exercise semantic table and function
+  discovery. Install aimeta and its four runtime dependencies (`kx.ax`, `kx.fusion`, `kx.printf`,
+  and `kx.log`) by following the upstream
+  [aimeta installation guide](https://github.com/KxSystems/aimeta/blob/main/docs/install.md). The
+  module directory must resolve as `~/.kx/mod/kx/aimeta` (or the equivalent location on `$QPATH`).
 - A running realidp Keycloak (the `quants` realm) + a filled-in `tests/deterministic/realidp/envs/.env.keycloak`
   (the same harness `just test-kdbx` uses; the file is gitignored — create it from the template).
   Every client the fixture provisions carries the `groups` mapper the policy keys on (generalized
@@ -44,7 +49,18 @@ cd /path/to/kx-mcp-server-container   # if you aren't already there
       tests/deterministic/realidp/setup/keycloak/keycloak_config.json
   ```
 
-## Step 1 — start the kdb-x host (data + kx.auth + the two grant sets)
+Verify the aimeta installation before starting the demo host:
+
+```bash
+q -q <<<'show key use `kx.aimeta; exit 0'
+# => `compile`validateDir`discover`init`reload`setlvl`data`getTables...
+```
+
+If aimeta is absent, the host still starts and the MCP backend falls back to native table and column
+introspection, but function discovery and authored descriptions, examples, and references are not
+available.
+
+## Step 1 — start the kdb-x host (data + aimeta + kx.auth + the two grant sets)
 
 > **Every step below runs in its own terminal** (the host, the container, and the `claude`/mint
 > commands all need separate terminals since the first two block in the foreground) — **`cd` to the

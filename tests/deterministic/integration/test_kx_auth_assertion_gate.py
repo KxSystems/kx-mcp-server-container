@@ -55,6 +55,7 @@ def test_kx_auth_assertion_gate_behaviour():
         capture_output=True,
         text=True,
         timeout=60,
+        env=env,
     )
     out = proc.stdout + proc.stderr
     if "license" in out.lower() and ("error" in out.lower() or "no license" in out.lower()):

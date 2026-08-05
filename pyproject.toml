@@ -17,6 +17,14 @@ package = false
 # runs in one process → one pykx. Override the upper bound: kdbai-client only touches pykx in qipc
 # mode, so this is a metadata conflict to bypass, not a runtime one (verify qipc against pykx 4).
 override-dependencies = ["pykx>=4.0.0.b4"]
+# numpy >= 2.5 requires Python >= 3.12 and ships stubs using PEP 695 `type` statements that mypy
+# rejects as a fatal parse error under our 3.10 target (mypy loads an installed typed package's
+# stubs regardless of follow_imports). A genuine >=3.10 install already resolves an older numpy;
+# this constraint keeps the *dev/CI* lock on a 3.10-target-compatible numpy so the mypy gate stays
+# honest at the 3.10 floor. It does NOT touch shipped wheel metadata (kdbai declares numpy
+# unpinned), so end users still float to the latest numpy. Lift the cap if the mypy floor moves to
+# >=3.12 or numpy's stubs stop assuming 3.12.
+constraint-dependencies = ["numpy<2.5"]
 
 [tool.uv.workspace]
 members = ["packages/*"]

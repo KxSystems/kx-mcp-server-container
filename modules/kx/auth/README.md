@@ -42,6 +42,12 @@ is required: `bind` consults the same default-deny policy (the caller's login mu
 on `` `identity ``), so without it every assertion is refused. Full grant-table example:
 `demos/claude-code-live-kdbx/host.q`.
 
+`configure` is a self-contained development/reference verifier. Because `activate[]` composes with
+the prior `.z.pw`, a host may instead leave `configure` unset and authenticate the service-account
+login through its existing `-U` password file or platform `.z.pw`. Use one q-side verifier, not both.
+Separately, the MCP process needs one connection-secret source (`KDBX_DB_PASSWORD` or, preferably for
+production, `KDBX_DB_PASSWORD_FILE`); it does not read q's password file.
+
 ## Exports
 
 | Export | Signature | Description |
@@ -66,19 +72,43 @@ caller binds via PyKX (the common case), string claim values arrive as q **symbo
 as symbols (don't `` `$ `` them). `bind` canonicalises `exp` from a unix-seconds long to a q
 **timestamp**, so it compares directly to `.z.p`.
 
-## Usage — gating access
+## Usage — requiring identity and authorizing access
 
-`require[]` refuses an unbound or expired handle; layer your own entitlement check on top:
+Install a policy that grants the `trader` group `` `read `` on `` `trades ``. The compact first
+clause retains the trusted service account's required `` `assert `` on `` `identity `` grant from
+the Install example; omitting it makes subsequent `bind` calls fail:
 
 ```q
-entitled:`alice`bob;
+allowed:{[p;a;r]
+  $[(p[`sub]=`svcuser) and (a=`assert) and r=`identity;
+    1b;
+    $[`groups in key p;
+      (`trader in p`groups) and (a=`read) and r=`trades;
+      0b]] };
 
-getTrades:{[s]
-  p:.kx.auth.require[];                          / 'denied unless a valid principal is bound
-  if[not (p[`claims]`preferred_username) in entitled;
-    '"denied: not entitled"];
-  select from trades where sym = s };
+.kx.auth.setPolicy[allowed];
 ```
 
-A call on a connection bound to `alice` runs; one bound to a non-entitled user — or an unbound
-connection — is refused with a clean `'denied` the caller can handle.
+Use `require[]` when a function needs a valid asserted identity but has no distinct
+action/resource decision:
+
+```q
+principalSummary:{[]
+  p:.kx.auth.require[];                           / 'denied when unbound or expired
+  `sub`groups#p };
+```
+
+Use `authorize[action;resource]` for protected operations. It calls `require[]`, evaluates the
+installed policy, and returns the valid principal on success, so there is no need to call
+`require[]` immediately beforehand:
+
+```q
+getTrades:{[s]
+  p:.kx.auth.authorize[`read;`trades];            / require identity + enforce the S/A/R grant
+  / p remains available for audit or finer row-level scoping
+  select from trades where sym=s };
+```
+
+A principal in the `trader` group may read `trades`. A principal without that grant—and any
+unbound or expired connection—is refused with a clean `'denied` the caller can handle. Binding an
+end user does not give that user the service account's separate assertion privilege.

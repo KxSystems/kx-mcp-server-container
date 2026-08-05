@@ -1,3 +1,2 @@
-.env.keycloak
-.env.entra
-.env.kdbai
+.env.*
+!.env.*.example

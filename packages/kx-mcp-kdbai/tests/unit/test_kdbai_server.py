@@ -53,6 +53,20 @@ def test_preflight_exits_when_backend_unreachable(mocker):
     assert exc.value.code == 1
 
 
+def test_authentication_error_names_backend_environment_variables(mocker, caplog):
+    """Authentication diagnostics name the bundle's public KDBAI_DB_* settings."""
+    import kdbai_client
+    mocker.patch(
+        "kdbai_client.Session",
+        side_effect=kdbai_client.KDBAIException("authentication error"),
+    )
+
+    with pytest.raises(SystemExit):
+        McpServer(_settings())
+
+    assert "KDBAI_DB_USERNAME and KDBAI_DB_PASSWORD" in caplog.text
+
+
 def test_passthrough_preflight_is_socket_probe_not_authed_open(mocker):
     """passthrough has no principal at startup, so the pre-flight must NOT open an (anonymous) Session
     against an OAuth-enforcing server — it does a tokenless socket reachability probe instead.

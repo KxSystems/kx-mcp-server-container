@@ -32,10 +32,19 @@ def test_register_addins_discovers_all_primitive_kinds_in_one_pass():
     )
 
     tools = {t.name for t in asyncio.run(mcp.list_tools())}
-    assert tools == {"run_sql_query", "similarity_search", "hybrid_search"}
+    assert tools == {
+        "run_sql_query", "similarity_search", "hybrid_search",
+        "get_table_metadata", "refresh_metadata",
+    }
 
     resource_uris = {str(r.uri) for r in asyncio.run(mcp.list_resources())}
-    assert resource_uris == {"tables://all", "file://guidance/kdbx-sql-queries"}
+    assert resource_uris == {
+        "tables://all", "functions://all", "schema://metadata/v1",
+        "file://guidance/kdbx-sql-queries",
+    }
+
+    template_uris = {str(r.uri_template) for r in asyncio.run(mcp.list_resource_templates())}
+    assert template_uris == {"tables://{table}", "functions://{function}"}
 
     prompts = {p.name for p in asyncio.run(mcp.list_prompts())}
     assert prompts == {"table_analysis"}
@@ -72,3 +81,19 @@ def test_register_addins_is_instance_safe():
     tools_a = {t.name: t for t in asyncio.run(mcp_a.list_tools())}
     tools_b = {t.name: t for t in asyncio.run(mcp_b.list_tools())}
     assert tools_a["run_sql_query"] is not tools_b["run_sql_query"]
+
+
+def test_metadata_uris_compose_under_the_kdbx_namespace():
+    child = _new_server()
+    register_addins(child)
+    parent = FastMCP("parent")
+    parent.mount(child, namespace="kdbx")
+
+    resources = {str(r.uri) for r in asyncio.run(parent.list_resources())}
+    templates = {str(r.uri_template) for r in asyncio.run(parent.list_resource_templates())}
+
+    assert "tables://kdbx/all" in resources
+    assert "functions://kdbx/all" in resources
+    assert "schema://kdbx/metadata/v1" in resources
+    assert "tables://kdbx/{table}" in templates
+    assert "functions://kdbx/{function}" in templates

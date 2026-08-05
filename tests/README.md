@@ -12,7 +12,7 @@ tests/                    ← this directory
     integration/     ← real subprocess over HTTP/stdio, license-free
     realidp/         ← requires live Keycloak/Entra, excluded from CI
   docs/              ← TESTING.md (what's tested / how it works / coverage tracker)
-  fixtures/          ← shared test bundles (kx-mcp-example)
+  fixtures/          ← shared test bundles (kx-mcp-example + composition test doubles)
   conftest.py        ← spawn_container harness (used by integration; realidp has its own _spawn.py)
 ```
 

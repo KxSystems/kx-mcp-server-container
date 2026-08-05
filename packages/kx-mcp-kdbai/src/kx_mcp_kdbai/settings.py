@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Literal
-from pydantic import SecretStr, Field
+from pydantic import SecretStr, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolve the packaged embeddings CSV relative to this module, not the process CWD — the container
@@ -130,6 +130,15 @@ class KDBAIConfig(BaseSettings):
             "dev IdP [env: KDBAI_DB_SSL_VERIFY]"
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_port_for_mode(cls, data):
+        """Use KDB.AI's conventional endpoint for the selected mode unless port was explicit."""
+        if isinstance(data, dict) and "port" not in data:
+            data = dict(data)
+            data["port"] = 8081 if data.get("mode", "qipc") == "rest" else 8082
+        return data
 
 
 class AppSettings(BaseSettings):

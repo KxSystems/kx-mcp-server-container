@@ -5,7 +5,9 @@ IdP fixtures (``_require_idp``, ``container_url``, ``alice_token``, etc.) are
 registered at the parent ``realidp/conftest.py`` and inherited automatically.
 
 Fixtures defined here:
-  ``_require_kdbai_db``       — fail-fast guard: kdbai-db socket reachable?
+  ``kdbai_mode``              — parametrized (qipc/rest): every KA.* test using the container
+                                fixtures below runs once per mode, test IDs suffixed [qipc]/[rest]
+  ``_require_kdbai_db``       — fail-fast guard: kdbai-db socket reachable (at the mode's port)?
   ``kdbai_container_url``     — session-scoped container with ``--bundles kdbai``
                                 + passthrough, quants realm
   ``kdbai_manager_container_url`` — same but with the manager realm JWKS (KA.5);
@@ -54,6 +56,9 @@ _ENTRA_SEED = "tests/deterministic/realidp/setup/entra/seed.py"
 
 _KDBAI_DEFAULT_HOST = "127.0.0.1"
 _KDBAI_DEFAULT_PORT = 8082
+# REST is a distinct port on the SAME running kdbai-db (network_mode: host) — no separate
+# compose service. See setup/keycloak/seed.py's KDBAI_ENDPOINT docstring for the qipc/rest split.
+_KDBAI_DEFAULT_REST_PORT = 8081
 
 # The quants-realm machine identity provisioned by keycloak_setup.py's `service_client` block —
 # a client_credentials grant, distinct from the human kdbai-service client (see keycloak_config.json).
@@ -65,26 +70,57 @@ _SERVICE_ACCOUNT_AUDIENCE = "kdbai-service"
 
 
 # ---------------------------------------------------------------------------
+# Transport mode — parametrized so every KA.* test runs under both qipc and
+# rest with no change to the test bodies (both just consume the container-URL
+# fixtures below, which are threaded through this dimension).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session", params=["qipc", "rest"])
+def kdbai_mode(request) -> str:
+    """The kdbai transport mode this test run is parametrized over.
+
+    Same running kdbai-db serves qipc on ``KDBAI_DB_PORT`` (default 8082) and rest on
+    ``KDBAI_DB_REST_PORT`` (default 8081) simultaneously — no separate backend needed.
+    """
+    return request.param
+
+
+def _port_for_mode(mode: str) -> str:
+    """Resolve the kdbai-db port for a transport mode (env-overridable, mode-specific default)."""
+    if mode == "rest":
+        return os.environ.get("KDBAI_DB_REST_PORT", str(_KDBAI_DEFAULT_REST_PORT))
+    return os.environ.get("KDBAI_DB_PORT", str(_KDBAI_DEFAULT_PORT))
+
+
+# ---------------------------------------------------------------------------
 # kdbai-db guard
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="session")
-def _require_kdbai_db() -> None:
+def _require_kdbai_db(kdbai_mode) -> None:
     """Fail fast if kdbai-db is not reachable at the configured host:port.
 
     Used as an explicit dependency of ``kdbai_container_url`` so it only fires
     when the KA.* ACL tests are actually selected — never during ``just test``
     or ``just test-keycloak``.
+
+    ``qipc`` is the load-bearing default and keeps the existing whole-session
+    ``pytest.exit`` — a missing qipc backend should abort loudly. ``rest`` is the newer,
+    optional dimension: an unreachable REST port only skips the ``[rest]``-parametrized
+    tests, leaving ``[qipc]`` coverage unaffected.
     """
     import socket
 
     host = os.environ.get("KDBAI_DB_HOST", _KDBAI_DEFAULT_HOST)
-    port = int(os.environ.get("KDBAI_DB_PORT", str(_KDBAI_DEFAULT_PORT)))
+    port = int(_port_for_mode(kdbai_mode))
     try:
         with socket.create_connection((host, port), timeout=3):
             pass
     except OSError as exc:
+        if kdbai_mode == "rest":
+            pytest.skip(f"kdbai-db REST port not reachable at {host}:{port}: {exc}")
         if provider_name() == "entra":
             pytest.exit(
                 f"kdbai-db not reachable at {host}:{port}: {exc}\n"
@@ -115,27 +151,32 @@ def _require_kdbai_db() -> None:
 
 
 @pytest.fixture(scope="session")
-def kdbai_container_url(_require_kdbai_db) -> str:
+def kdbai_container_url(_require_kdbai_db, kdbai_mode) -> str:
     """Session-scoped MCP container for the kdbai OAuth ACL lane (KA.* tests).
 
     Spawns one container with ``--bundles kdbai`` + ``KX_MCP_AUTH=jwks`` pointing
     at the ``kdbai-service`` Keycloak client. Uses ``KDBAI_DB_OUTBOUND_STRATEGY=passthrough``
-    so each inbound bearer is forwarded as the kdbai-db qipc connection credential,
-    letting kdbai-db enforce ACL against the propagated identity.
+    so each inbound bearer is forwarded to kdbai-db as the connection credential — the qipc
+    password under ``qipc``, or the ``external_token`` OAuth config file's ``access_token``
+    under ``rest`` — letting kdbai-db enforce ACL against the propagated identity either way.
+
+    Parametrized by ``kdbai_mode`` (qipc/rest) — see that fixture's docstring. One session-scoped
+    container is spawned per mode (pytest caches per distinct param within the session).
 
     Requires (sourced by ``just test-kdbai`` from ``envs/.env.kdbai``):
         KC_BASE, KC_REALM, KX_MCP_AUTH_AUDIENCE
-        KDBAI_DB_HOST, KDBAI_DB_PORT (defaults 127.0.0.1:8082)
+        KDBAI_DB_HOST (default 127.0.0.1), KDBAI_DB_PORT (default 8082, qipc),
+        KDBAI_DB_REST_PORT (default 8081, rest)
     """
     host = os.environ.get("KDBAI_DB_HOST", _KDBAI_DEFAULT_HOST)
-    port = os.environ.get("KDBAI_DB_PORT", str(_KDBAI_DEFAULT_PORT))
+    port = _port_for_mode(kdbai_mode)
     url, proc = _spawn_container(
         bundles="kdbai",
         extra_env={
             "KDBAI_DB_HOST": host,
             "KDBAI_DB_PORT": port,
             "KDBAI_DB_OUTBOUND_STRATEGY": "passthrough",
-            "KDBAI_DB_MODE": os.environ.get("KDBAI_DB_MODE", "qipc"),
+            "KDBAI_DB_MODE": kdbai_mode,
         },
     )
     yield url
@@ -147,7 +188,7 @@ def kdbai_container_url(_require_kdbai_db) -> str:
 
 
 @pytest.fixture(scope="session")
-def kdbai_service_account_container_url(_require_kdbai_db) -> str:
+def kdbai_service_account_container_url(_require_kdbai_db, kdbai_mode) -> str:
     """Session-scoped MCP container using the ``service_account`` outbound strategy.
 
     Inbound auth is unchanged from ``kdbai_container_url`` (quants-realm jwks) — a valid human
@@ -156,6 +197,10 @@ def kdbai_service_account_container_url(_require_kdbai_db) -> str:
     identity distinct from any human persona — see ``keycloak_config.json``'s ``service_client``
     block) instead of forwarding the caller's bearer. So a query's *result* should be identical
     regardless of which human called it — the backend never sees alice's or bob's claims.
+
+    Parametrized by ``kdbai_mode`` (qipc/rest) — see that fixture's docstring; under rest the
+    minted token is written to the ``external_token`` OAuth config file instead of used as the
+    qipc connection password.
 
     Requires the quants-realm ``service_client`` to have been provisioned by
     ``keycloak_setup.py`` and its grant seeded by ``seed.py`` (see module docstring).
@@ -169,14 +214,14 @@ def kdbai_service_account_container_url(_require_kdbai_db) -> str:
     kc_base = os.environ.get("KC_BASE", "http://localhost:8080")
     kc_realm = os.environ.get("KC_REALM", "quants")
     host = os.environ.get("KDBAI_DB_HOST", _KDBAI_DEFAULT_HOST)
-    port = os.environ.get("KDBAI_DB_PORT", str(_KDBAI_DEFAULT_PORT))
+    port = _port_for_mode(kdbai_mode)
     url, proc = _spawn_container(
         bundles="kdbai",
         extra_env={
             "KDBAI_DB_HOST": host,
             "KDBAI_DB_PORT": port,
             "KDBAI_DB_OUTBOUND_STRATEGY": "service_account",
-            "KDBAI_DB_MODE": os.environ.get("KDBAI_DB_MODE", "qipc"),
+            "KDBAI_DB_MODE": kdbai_mode,
             "KDBAI_DB_TOKEN_URL": f"{kc_base}/realms/{kc_realm}/protocol/openid-connect/token",
             "KDBAI_DB_CLIENT_ID": _SERVICE_ACCOUNT_CLIENT_ID,
             "KDBAI_DB_CLIENT_SECRET": _SERVICE_ACCOUNT_CLIENT_SECRET,
@@ -192,7 +237,7 @@ def kdbai_service_account_container_url(_require_kdbai_db) -> str:
 
 
 @pytest.fixture(scope="session")
-def kdbai_manager_container_url(request, _require_kdbai_db) -> str:
+def kdbai_manager_container_url(request, _require_kdbai_db, kdbai_mode) -> str:
     """Session-scoped MCP container for manager-realm tokens (KA.5 system_admin path).
 
     Under **Keycloak**, the main ``kdbai_container_url`` uses the quants realm JWKS,
@@ -205,7 +250,8 @@ def kdbai_manager_container_url(request, _require_kdbai_db) -> str:
     Under **Entra** (single tenant), root and alice share the *same* issuer — root is
     system_admin purely via its ``manager-admin`` group Object ID (kdbai-db's
     ``ACL_SYSTEM_ADMIN_GROUP``), not a separate realm. So there is no second issuer to
-    accept and this fixture collapses to ``kdbai_container_url`` (no extra process).
+    accept and this fixture collapses to ``kdbai_container_url`` (no extra process) — which
+    resolves in the currently active ``kdbai_mode`` parametrization, same as here.
     """
     if provider_name() == "entra":
         yield request.getfixturevalue("kdbai_container_url")
@@ -213,7 +259,7 @@ def kdbai_manager_container_url(request, _require_kdbai_db) -> str:
 
     kc_base = os.environ.get("KC_BASE", "http://localhost:8080")
     host = os.environ.get("KDBAI_DB_HOST", _KDBAI_DEFAULT_HOST)
-    port = os.environ.get("KDBAI_DB_PORT", str(_KDBAI_DEFAULT_PORT))
+    port = _port_for_mode(kdbai_mode)
     manager_jwks_uri = f"{kc_base}/realms/manager/protocol/openid-connect/certs"
     manager_issuer = f"{kc_base}/realms/manager"
     url, proc = _spawn_container(
@@ -224,7 +270,7 @@ def kdbai_manager_container_url(request, _require_kdbai_db) -> str:
             "KDBAI_DB_HOST": host,
             "KDBAI_DB_PORT": port,
             "KDBAI_DB_OUTBOUND_STRATEGY": "passthrough",
-            "KDBAI_DB_MODE": os.environ.get("KDBAI_DB_MODE", "qipc"),
+            "KDBAI_DB_MODE": kdbai_mode,
         },
     )
     yield url

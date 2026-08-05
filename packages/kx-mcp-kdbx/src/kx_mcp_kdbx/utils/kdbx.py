@@ -165,3 +165,9 @@ def config_from_ctx(ctx) -> Optional[KDBConfig]:
     """
     server = getattr(ctx, "fastmcp", None)
     return getattr(server, "_kdbx_config", None)
+
+
+def metadata_cache_from_ctx(ctx):
+    """Resolve the metadata cache owned by the mounted backend instance."""
+    server = getattr(ctx, "fastmcp", None)
+    return getattr(server, "_kdbx_metadata_cache", None)

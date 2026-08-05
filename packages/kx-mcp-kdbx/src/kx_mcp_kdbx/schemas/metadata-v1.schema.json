@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://kdbx/metadata/v1",
+  "title": "KX MCP KDB-X metadata contract v1",
+  "description": "Stable agent-facing projection of aimeta semantics plus live KDB-X state.",
+  "type": "object",
+  "required": ["$schema", "schemaVersion", "status", "metadata", "tables", "references", "functions"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {"const": "schema://kdbx/metadata/v1"},
+    "schemaVersion": {"const": 1},
+    "status": {"enum": ["success", "error", "permission_denied"]},
+    "message": {"type": "string"},
+    "metadata": {"$ref": "#/$defs/metadata"},
+    "tables": {"type": "array", "items": {"$ref": "#/$defs/table"}},
+    "references": {"type": "array", "items": {"$ref": "#/$defs/reference"}},
+    "functions": {"type": "array", "items": {"$ref": "#/$defs/function"}}
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object", "required": ["tier", "annotationStatus", "source", "generatedAt"], "additionalProperties": false,
+      "properties": {
+        "tier": {"type": "integer", "minimum": 1, "maximum": 3},
+        "annotationStatus": {"enum": ["unavailable", "unsupported_schema", "invalid", "compile_failed_stale", "annotated", "compile_failed", "empty", "basic", "error", "reload_failed"]},
+        "annotationDetail": {"type": "string"},
+        "source": {"enum": ["native", "aimeta_qipc"]},
+        "generatedAt": {"type": "string", "format": "date-time"}, "aimetaSchemaVersion": {"const": 2},
+        "process": {"$ref": "#/$defs/process"},
+        "hiddenByEntitlements": {"type": "integer", "minimum": 0, "description": "Count of tables the data gate withheld from this response — in single-table responses this includes withheld reference-resolver tables, not only listed tables."}
+      }
+    },
+    "table": {
+      "type": "object", "required": ["name", "private", "desc", "columns"], "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"}, "private": {"type": "boolean"}, "desc": {"type": "string"},
+        "reference": {"type": ["string", "null"]}, "labels": {"type": "array", "items": {"type": "string"}},
+        "columns": {"type": "array", "items": {"$ref": "#/$defs/column"}},
+        "sampleData": {"type": "array", "items": {"type": "object"}}, "tags": {"type": "array", "items": {"type": "string"}},
+        "live": {"$ref": "#/$defs/live"}
+      }
+    },
+    "column": {
+      "type": "object", "required": ["name", "kdbType"], "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"}, "kdbType": {"type": "string"}, "desc": {"type": "string"},
+        "semanticType": {"type": "string"}, "foreignRef": {"type": "string"},
+        "cardinality": {"enum": ["low", "medium", "high"]},
+        "attributes": {"type": "array", "items": {"enum": ["s", "u", "p", "g"]}}, "label": {"const": true}
+      }
+    },
+    "live": {
+      "type": "object", "required": ["rowCount", "partitioned", "rowSource"], "additionalProperties": false,
+      "properties": {
+        "rowCount": {"type": ["integer", "null"]}, "partitioned": {"type": "boolean"},
+        "rowSource": {"enum": ["preview", "sampleData", "none"]},
+        "preview": {"type": "array", "items": {"type": "object"}}
+      }
+    },
+    "reference": {
+      "type": "object", "required": ["semanticType", "table", "keyColumn", "label", "labels"], "additionalProperties": false,
+      "properties": {
+        "semanticType": {"type": "string"}, "table": {"type": "string"}, "keyColumn": {"type": "string"},
+        "label": {"type": ["string", "null"]}, "labels": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "function": {
+      "type": "object", "required": ["name", "desc", "params", "returns", "examples", "uses", "tags"], "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"}, "desc": {"type": "string"},
+        "params": {"type": "array", "items": {"$ref": "#/$defs/param"}},
+        "returns": {"$ref": "#/$defs/returns"}, "examples": {"type": "array", "items": {"type": "string"}},
+        "uses": {"type": "array", "items": {"type": "string"}}, "tags": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "param": {
+      "type": "object", "required": ["name", "type", "desc"], "additionalProperties": false,
+      "properties": {"name": {"type": "string"}, "type": {"type": "string"}, "desc": {"type": "string"}}
+    },
+    "returns": {
+      "type": "object", "required": ["type", "desc"], "additionalProperties": false,
+      "properties": {"type": {"type": "string"}, "desc": {"type": "string"}}
+    },
+    "process": {
+      "type": "object", "required": ["name"], "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"}, "host": {"type": "string"}, "port": {"type": "integer"},
+        "compileStatus": {"enum": ["failed", "empty"]},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

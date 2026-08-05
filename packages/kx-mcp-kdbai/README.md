@@ -26,16 +26,20 @@ bundle has no standalone server of its own — `build_server()` just returns a c
 ## Prerequisites
 
 - **A reachable KDB.AI Server** on a host and port the MCP server can reach. The bundle's default is
-  **`127.0.0.1:8082`** in **`qipc`** mode. See the
+  **`127.0.0.1:8082`** in **`qipc`** mode; selecting `rest` without an explicit port uses
+  **`127.0.0.1:8081`**. See the
   [KDB.AI documentation](https://code.kx.com/kdbai/latest/) to install / run a server.
 - **[UV](https://docs.astral.sh/uv/getting-started/installation/)** to run the server.
-- `kdbai-client` (pulled in automatically with this bundle). No `QLIC` / PyKX license is required.
+- **`kdbai-client>=2.0.0`** (pulled in automatically with this bundle). The MCP host needs no
+  `QLIC` / PyKX license; the KDB.AI Server deployment owns its own licensing.
 
 ## KDB.AI setup
 
-Start (or point at) a KDB.AI Server, then configure the endpoint via `KDBAI_DB_*` (below). For a quick
-check that the MCP server can reach it, run the container with this bundle — it performs an eager
-connectivity pre-flight and exits with a clear message if the server is unreachable:
+Start (or point at) a KDB.AI Server, then configure the endpoint via `KDBAI_DB_*` (below). Run the
+container with this bundle to perform its eager mount-time pre-flight. Static credentials and
+`service_account` open a real SDK session; `passthrough` has no caller token at startup and therefore
+checks socket reachability only. A failed pre-flight disables this bundle while the parent container
+continues serving any healthy bundles:
 
 ```bash
 uv run kx-mcp --bundles kdbai   # connects to 127.0.0.1:8082 (qipc) by default
@@ -51,7 +55,7 @@ former `KDBAI_MCP_*` serving prefix.
 | Setting | Env var | Default | Notes |
 | --- | --- | --- | --- |
 | Host | `KDBAI_DB_HOST` | `127.0.0.1` | KDB.AI server hostname or IP |
-| Port | `KDBAI_DB_PORT` | `8082` | server port |
+| Port | `KDBAI_DB_PORT` | mode-sensitive | `8082` for qipc, `8081` for REST; an explicit value always wins |
 | Username | `KDBAI_DB_USERNAME` | _(empty)_ | |
 | Password | `KDBAI_DB_PASSWORD` | _(empty)_ | set when auth is enabled |
 | Mode | `KDBAI_DB_MODE` | `qipc` | `qipc` (fast binary) or `rest` (HTTP API) |
@@ -65,6 +69,10 @@ former `KDBAI_MCP_*` serving prefix.
 | Embeddings CSV | `KDBAI_DB_EMBEDDING_CSV_PATH` | _(packaged `utils/embeddings.csv`)_ | per-table embedding config |
 
 Resolution order: env vars > `.env` file > defaults.
+
+These defaults are a local-development posture: qipc, loopback, plaintext backend transport, empty
+static credentials, and no outbound identity strategy. Set transport security and an authentication
+strategy explicitly for production.
 
 **TLS (qipc mode).** Enable with `KDBAI_DB_QIPC_TLS=true`. Point `KX_SSL_CA_CERT_FILE` at the CA cert
 your TLS proxy uses; for local development you can bypass verification with `KX_SSL_VERIFY_SERVER=NO`.
@@ -105,7 +113,8 @@ the SDK's file-backed `JWTTokenManager` via a temp `external_token` oauth config
 
 **Validated live 2026-06-18** and committed in `tests/deterministic/realidp/kdbai/` (`tests/docs/TESTING.md`
 rows KA.1–KA.9, `just test-kdbai`). Against a real OAuth KDB.AI (`kdbai-db 2.0.0-rc.2`, Community
-Edition) with Keycloak, confirmed:
+Edition) with Keycloak, confirmed the following. That server build is the tested configuration, not
+a declared minimum server version:
 
 - **qipc-on-pykx-4 data path** — a full create+insert+query round-trip on `pykx 4.0.0b5` +
   `kdbai-client 2.0.0` over qipc (resolves the dependency-override risk in the root CLAUDE.md gotcha —
@@ -148,6 +157,11 @@ database+table in `src/kx_mcp_kdbai/utils/embeddings.csv`. Two providers ship re
 SentenceTransformers); add your own by subclassing `EmbeddingProvider` in
 `src/kx_mcp_kdbai/utils/embeddings.py` and decorating it with `@register_provider`, then map your
 database/table rows in the CSV. Set any required API keys (e.g. `OPENAI_API_KEY`) in the environment.
+
+These are call-time prerequisites, not registration-time feature gates: the search tools remain
+visible. Similarity search additionally needs an accessible database/table and a matching dense
+vector index. Hybrid search needs both dense and sparse indexes plus the configured sparse
+tokenizer/model. Missing configuration produces a tool error to fix; it does not disable the bundle.
 
 ## Capabilities
 
@@ -195,11 +209,14 @@ primitive names; the `kdbai_` qualifier is supplied by the container's `mount(na
 
 ## Troubleshooting
 
-- **Connection error / pre-flight exit** — the KDB.AI Server is not reachable on the configured
-  host:port (default `127.0.0.1:8082`) in the configured mode. The server logs a clear connectivity
-  error and exits rather than serving a broken backend.
+- **Connection error / bundle disabled** — the KDB.AI Server is not reachable on the configured
+  host:port (qipc default `127.0.0.1:8082`; REST default `127.0.0.1:8081`). The bundle logs a clear
+  connectivity error and is not mounted; the parent continues serving other healthy bundles.
 - **Authentication error** — auth is enabled on the server; set `KDBAI_DB_PASSWORD` (and
   `KDBAI_DB_USERNAME`).
 - **qipc + TLS** — set `KX_SSL_CA_CERT_FILE` (or `KX_SSL_VERIFY_SERVER=NO` for local dev).
+- **First passthrough call fails authentication/authorization** — startup checked reachability only;
+  verify the inbound bearer is valid for KDB.AI and that its principal has the necessary server ACL.
 - **Search returns no embeddings / provider errors** — confirm the table has a row in
-  `embeddings.csv` and the provider's API key is set.
+  `embeddings.csv`, the provider's API key is set, and the required dense (and, for hybrid, sparse)
+  indexes exist.

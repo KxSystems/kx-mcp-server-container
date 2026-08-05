@@ -7,7 +7,7 @@ license = "Apache-2.0"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "fastmcp>=3,<4",
-    "pydantic-settings",
+    "pydantic-settings>=2.14.2",
     # The static capability adapter reads a YAML grant store (KX_MCP_AUTHZ=static).
     "pyyaml",
     # The shared, fastmcp-free auth core (config contract + verifier) the kx auth CLI also depends on.

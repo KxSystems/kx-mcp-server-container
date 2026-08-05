@@ -21,7 +21,10 @@ from pathlib import Path
 
 import pytest
 
-_FIXTURE_SRC = str(Path(__file__).parent / "fixtures" / "kx-mcp-example" / "src")
+# Every fixture bundle's src/ dir goes on the spawned container's PYTHONPATH so the launcher
+# subprocess can import it by package name (kx-mcp-example/src -> `kx_mcp_example`). Globbed rather
+# than enumerated, so a new tests/fixtures/<bundle>/src is discovered with no edit here.
+_FIXTURE_SRCS = [str(p) for p in sorted((Path(__file__).parent / "fixtures").glob("*/src"))]
 
 
 def _free_port() -> int:
@@ -72,7 +75,7 @@ def spawn_container(tmp_path):
         port = _free_port()
         env = {
             **os.environ,
-            "PYTHONPATH": os.pathsep.join([_FIXTURE_SRC, os.environ.get("PYTHONPATH", "")]),
+            "PYTHONPATH": os.pathsep.join([*_FIXTURE_SRCS, os.environ.get("PYTHONPATH", "")]),
             **env_overrides,
         }
         proc = subprocess.Popen(

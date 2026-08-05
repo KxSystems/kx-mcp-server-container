@@ -2,6 +2,12 @@ KDB SQL Query Guide
 
 Write ANSI-compliant SQL for kdb+ tables.
 
+Before composing a query, read tables://kdbx/{table} (or call kdbx_get_table_metadata).
+The response follows schema://kdbx/metadata/v1. Use semanticType + references to resolve
+human-readable vocabulary values, foreignRef to plan joins, attributes as query-planning hints,
+and live.rowSource to distinguish real preview rows from illustrative annotation sampleData.
+functions://kdbx/{function} documents public q functions and the tables declared in their uses list.
+
 IMPORTANT - Column Name Quoting:
 Always use double quotes around column names to avoid conflicts with SQL reserved words.
 Examples: "Close", "Open", "Date", "Time", "Group", "Order", "Key", "Value"

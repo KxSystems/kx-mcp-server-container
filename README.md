@@ -55,7 +55,7 @@ The user guides live under [`docs/`](docs/): [deployment](docs/deployment.md) ·
 > [KDB-X backend README](packages/kx-mcp-kdbx/README.md#prerequisites).
 
 1. **Bring up a KDB-X service.** For local testing, [examples/host.q](examples/host.q) loads the SQL + AI
-   interfaces, seeds a `trades` table, and listens on `:5010`:
+   interfaces, seeds annotated `instruments` and `trades` tables, and listens on `:5010`:
 
    ```bash
    q examples/host.q
@@ -85,6 +85,31 @@ The kdb-x backend is **mount-only** — it runs only through the container, so t
 
 See the [backend README](packages/kx-mcp-kdbx/README.md#configuration) for the full `KDBX_DB_*` set
 (TLS, timeout, retry, embeddings, metric, k) and the licence/AI-libs setup.
+
+### Semantic KDB-X metadata and function discovery
+
+The kdb-x backend can use the optional
+[aimeta](https://github.com/KxSystems/aimeta) module on the target host to give agents semantic
+schema context—not just column names and q types. Annotated hosts expose descriptions,
+`semanticType` vocabularies, reference resolvers, explicit `foreignRef` joins, public q function
+signatures, examples, and declared table dependencies. Hosts without usable aimeta metadata remain
+fully supported: discovery falls back cleanly to native `tables[]`/`meta` introspection.
+
+The agent-facing output is the versioned **KDB-X MCP metadata contract v1**, available as JSON
+Schema at `schema://kdbx/metadata/v1`. Agents can discover all visible metadata or use the
+token-efficient single-item surfaces:
+
+- `tables://kdbx/all` and `tables://kdbx/{table}`
+- `functions://kdbx/all` and `functions://kdbx/{function}`
+- `kdbx_get_table_metadata` with a bounded live preview
+
+Metadata is filtered through the same optional KDB-X data-entitlement gate as table discovery;
+references and function dependencies cannot reveal filtered tables. The administrative
+`kdbx_refresh_metadata` tool reloads recompiled annotations without restarting the container. It is
+route-only when `KX_MCP_AUTHZ` is unset (the default); when capability authz is configured, callers
+must have the `admin` capability for `kdbx:metadata`. See the
+[KDB-X backend metadata guide](packages/kx-mcp-kdbx/README.md#semantic-metadata-with-aimeta) and
+[authorization guide](docs/auth.md#authorization-kx_mcp_authz).
 
 ### Run from the published wheels (no checkout)
 
@@ -273,8 +298,8 @@ spawn never crashes, it may just come up bare:
 | Assumption | Required by | Symptom if missing | Resolution |
 |---|---|---|---|
 | A kdb license | the **`kdbx` bundle's PyKX** (forces `PYKX_LICENSED=true`) | `import pykx` fails → `kdbx` disabled | with a kdb-x install it's auto-resolved relative to the `q` binary (QHOME → `kc.lic`); only set `QLIC` for a standalone PyKX (e.g. CI) |
-| Reachable KDB-X + initialized SQL module on `:5010` | `kdbx` tools (qIPC) | pre-flight exits → `kdbx` disabled, parent serves bare | start a KDB-X host (e.g. `q examples/host.q`) |
-| Reachable KDB.AI endpoint | `kdbai` tools | pre-flight fails → `kdbai` disabled | configure `KDBAI_*` |
+| Reachable KDB-X + initialized SQL module on `:5010` | `kdbx` tools (qIPC) | pre-flight fails → `kdbx` disabled, parent serves bare | start a KDB-X host (e.g. `q examples/host.q`) |
+| Reachable KDB.AI endpoint | `kdbai` tools | pre-flight fails → `kdbai` disabled | configure `KDBAI_DB_*` |
 
 ### Running with inbound auth
 
@@ -326,12 +351,18 @@ See [packages/kx-mcp-kdbx/README.md](packages/kx-mcp-kdbx/README.md) for setup a
 | `kdbx_run_sql_query` | Execute a SQL `SELECT` against KDB-X (write keywords blocked; max 1000 rows) | `query` | JSON query results |
 | `kdbx_similarity_search` | Dense-vector similarity search on a table _(needs KDB-X ≥ 0.1.2 + AI libs)_ | `table_name`, `query`, `n?` | Search results |
 | `kdbx_hybrid_search` | Hybrid dense + sparse (BM25) search on a table _(needs AI libs)_ | `table_name`, `query`, `n?` | Search results |
+| `kdbx_get_table_metadata` | Fetch one table under metadata contract v1 | `table`, `preview_rows?` (0–100) | Semantic schema + live state |
+| `kdbx_refresh_metadata` | Reload recompiled aimeta metadata _(admin capability)_ | — | Refresh status + detected tier |
 
 **Resources**
 
 | Name | URI | Purpose |
 | --- | --- | --- |
-| `kdbx_describe_tables` | `tables://kdbx/all` | Schema overview of all tables with metadata + sample rows |
+| `kdbx_describe_tables` | `tables://kdbx/all` | Contract-v1 JSON for all visible tables, semantic references, and live samples |
+| `kdbx_describe_table` | `tables://kdbx/{table}` | Token-efficient metadata lookup for one table |
+| `kdbx_functions` | `functions://kdbx/all` | Public aimeta-documented functions and table dependencies |
+| `kdbx_function` | `functions://kdbx/{function}` | Token-efficient metadata lookup for one qualified function |
+| `kdbx_metadata_schema` | `schema://kdbx/metadata/v1` | Machine-readable JSON Schema for the agent-facing metadata contract |
 | `kdbx_sql_query_guidance` | `file://kdbx/guidance/kdbx-sql-queries` | SQL `SELECT` syntax guidance and examples |
 
 **Prompts**
@@ -428,9 +459,9 @@ For interactive development/debugging of MCP primitives, the
 
 ## Troubleshooting
 
-- **A backend fails to start / the server exits at launch** — most backend startup failures (e.g. an
-  unreachable database, a missing license) surface as a clear logged error and a clean exit, not a
-  stack trace. See the backend's own troubleshooting, e.g.
+- **A backend fails to start / is absent from the mounted surface** — most backend startup failures
+  (e.g. an unreachable database or missing license) surface as a clear logged error and disable only
+  that bundle; the parent continues serving other healthy bundles. See the backend's troubleshooting:
   [KDB-X](packages/kx-mcp-kdbx/README.md#troubleshooting).
 - **Container port in use** — change it with `--port` / `KX_MCP_PORT`.
 - **No bundles selected** — pass `--bundles` or set `KX_MCP_BUNDLES`.

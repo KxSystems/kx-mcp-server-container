@@ -5,6 +5,7 @@ from packaging import version
 from fastmcp import FastMCP
 from kx_mcp_kdbx.settings import AppSettings
 from kx_mcp_kdbx.addins import register_addins
+from kx_mcp_kdbx.utils.aimeta import MetadataCache, detect_metadata, metadata_guidance
 
 # Imported for its registration side effect: self-registers the "kdbx_rbac" capability-check authz
 # adapter on the kx_auth_core.authz registry (module-bottom register_authz_adapter call). The
@@ -45,6 +46,7 @@ class McpServer:
         self.logger.info(f"KDBConfig: {self.db_config=}")
 
         self.ai_libs_available = False
+        self.metadata_cache = MetadataCache(self.db_config.aimeta_cache_ttl)
 
         # Initialize server. Mount-only: the container owns transport/host/port, so the only thing
         # this bundle decides is the server name (the SERVER_NAME constant — no serving config).
@@ -58,6 +60,7 @@ class McpServer:
         # lets two kdb-x backends (different host+ports) coexist in one container.
         self.mcp._kdbx_config = self.db_config  # type: ignore[attr-defined]  # instance-safety stash (read via getattr)
         self.mcp._kdbx_ai_libs = self.ai_libs_available  # type: ignore[attr-defined]
+        self.mcp._kdbx_metadata_cache = self.metadata_cache  # type: ignore[attr-defined]
 
         self._register_addins()
         self._gate_ai_tools()
@@ -120,6 +123,20 @@ class McpServer:
 
             set_ai_libs_available(ai_libs_available)
             self.ai_libs_available = ai_libs_available
+
+            # aimeta enriches discovery but is not a backend prerequisite. Probe over the existing
+            # qIPC connection and retain the result in this mounted instance's cache.
+            try:
+                detected = detect_metadata(
+                    conn=conn, config=self.db_config, cache=self.metadata_cache, force=True
+                )
+                message = metadata_guidance(detected)
+                if detected.tier == 3:
+                    self.logger.info(message)
+                else:
+                    self.logger.warning(message)
+            except Exception as e:
+                self.logger.warning(f"KDB-X aimeta check: SKIPPED - probe failed ({e})")
 
             # Identity assertion: when enabled, the target must carry the `kx.auth` module and the
             # channel should be TLS-wrapped (the service-account credential + asserted principal

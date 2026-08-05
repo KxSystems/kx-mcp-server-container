@@ -15,12 +15,14 @@
 / table symbol like `trades vs a colon-namespaced MCP resource like `kdbx:sql), NOT two schemas or two
 / check fns. Grants are chosen to DIVERGE so the two sets are visible:
 /   - capability: `viewer`+`trader` may `query` `kdbx:sql   (both alice AND bob may invoke the tool)
-/   - data      : `trader` may `read`+`write` `trades       (alice only — bob is viewer-only)
+/   - data      : `trader` may read `trades`+`instruments and write `trades (alice only)
 / => alice clears both -> rows; bob clears the capability check (may use the SQL tool) but the data
 /    gate denies the trades data -> a clean permission_denied. The two-set headline.
 / .
 / Run from the repo root (manual.md drives this):  q demos/claude-code-live-kdbx/host.q -U <userpass>
 / Requires the kx.auth module on the q module path: `just install-modules`.
+/ For semantic metadata, install kx.aimeta + its runtime dependencies per manual.md. The standard
+/ host loaded below degrades to native introspection when aimeta is unavailable.
 / NB a solitary "/" line would start a block comment — avoided throughout (see the q skill).
 
 / --- canonical data + SQL/AI interface (reuse the standard host) -------------------------------
@@ -45,8 +47,8 @@ system"l examples/host.q";
 / login-keyed admin grant (WHO may assert an identity) keys on the principal's `sub instead, because
 / the service account is a bare login with no roles. One matching fn evaluates both families — data
 / vs capability vs assert is just which table a row lives in, not a special case.
-/ DATA grants (the data gate): the `trader group may read+write `trades.
-.demo.dataGrants:([] grp:`trader`trader; act:`read`write;  res:2#`trades);
+/ DATA grants (the data gate): the `trader group may read both demo tables and write `trades.
+.demo.dataGrants:([] grp:3#`trader; act:`read`read`write; res:`trades`instruments`trades);
 / CAPABILITY grants (the capability check): `viewer and `trader may `query the `kdbx:sql tool capability.
 / Colon-namespaced MCP resources are built with `$"..." — a literal `kdbx:sql would mis-tokenise.
 .demo.capGrants:([] grp:`viewer`trader; act:`query`query; res:2#`$"kdbx:sql");
@@ -82,4 +84,4 @@ system"l examples/host.q";
 -1 "claude-code-live-kdbx host ready: identity assertion ON, TWO RBAC sets";
 -1 "  service account : ",string .demo.svcUser;
 -1 "  capability check : groups x capability (default-deny) — `viewer`+`trader may `query `kdbx:sql";
--1 "  data gate        : groups x table x action (default-deny) — `trader may read+write `trades";
+-1 "  data gate        : groups x table x action (default-deny) — `trader may read demo metadata";

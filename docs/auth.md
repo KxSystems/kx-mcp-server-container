@@ -174,11 +174,21 @@ KDBX_DB_USERNAME=<service-account>
 KDBX_DB_PASSWORD=<service-account-pw>   # or KDBX_DB_PASSWORD_FILE (wins when set)
 ```
 
+When assertion is **off** (the default), those credentials are simply the single backend
+connection identity; the container does not bind the inbound principal in q. When assertion is on,
+they become a trusted service-account login. Configure exactly one password source on the MCP side:
+the environment value or, preferably in production, a mounted password file.
+
 The container connects as a trusted service account (per-principal cached connections), and calls
 `.kx.auth.bind` with the projected principal (structured fields + raw claims). The q side is the
 [`kx.auth`](../modules/kx/auth/init.q) module (install with `just install-modules`): the host
 process loads it, configures which claim paths promote to `groups`/`tenant`
 (`.kx.auth.setClaims`), and supplies a policy to the default-deny `authorize`/`setPolicy` hook.
+On q, `.kx.auth.configure[(user;password)]` is the self-contained development/reference verifier;
+an existing `-U` password file or platform-defined `.z.pw` is the production-oriented alternative.
+Do not configure a redundant second q verifier. Whichever verifier authenticates the connection,
+the installed policy must separately grant that login `` `assert `` on `` `identity ``; a
+data-only replacement policy makes `bind` fail.
 q-side setup detail: [`packages/kx-mcp-kdbx/README.md`](../packages/kx-mcp-kdbx/README.md)
 § Identity assertion.
 
@@ -208,6 +218,11 @@ Authorization has two layers, distinguished by *where* the check runs and *what*
 | `static` | The built-in YAML capability-grant adapter (groups ∩ grant, keyed namespace → action). |
 | `kdbx_rbac` | kdb-x adapter: delegates the `(action; resource)` decision to the q `.kx.auth` engine. |
 
+The Python `@authorize(...)` decorator depends only on the fastmcp-free authorization adapter seam,
+not on `kx.auth`. In particular, `static` reads its YAML policy in the container and works with no
+q authorization module. `kx.auth` is required only when the selected adapter or data gate actually
+consults q (`kdbx_rbac` or `KDBX_DB_DATA_GATE=true`, both of which also require identity assertion).
+
 ```bash
 KX_MCP_AUTHZ=static
 KX_MCP_AUTHZ_POLICY_FILE=/etc/kx-mcp/capability-policy.yaml
@@ -219,12 +234,24 @@ The policy file shape:
 ```yaml
 kdbx:
   query: [admin]          # only the admin group may invoke the kdbx_run_sql_query tool
+  admin: [admin]          # permits the administrative kdbx_refresh_metadata tool
 acme:
   publish: [data-eng, admin]
 ```
 
-(`query` is the action the shipped kdb-x SQL tool declares — `@authorize(action="query",
-resource="kdbx:sql")`; `acme:publish` illustrates the shape for your own extension's tool-class.)
+(`query` is declared by the shipped SQL tool; `admin` is declared by metadata refresh. The static
+adapter keys namespace + action, while each decorator still records its full resource convention:
+`kdbx:sql` or `kdbx:metadata`. `acme:publish` illustrates a downstream extension.)
+
+With `KX_MCP_AUTHZ=kdbx_rbac`, grant the same action/resource convention in the host's q capability
+table. For a `grp`/`act`/`res` grant table like the live demo's, an administrator grant is:
+
+```q
+capGrants,:enlist (`admin;`admin;`$"kdbx:metadata");
+```
+
+The first `admin` is the asserted group, the second is the action. Omitting that row leaves refresh
+default-denied while other route-only metadata reads continue to use the data gate.
 
 Two rules worth internalising: a **decorated** action absent from the file is **denied** (a declared
 capability concern with no grant means nobody is granted), and route-only is expressed by *not

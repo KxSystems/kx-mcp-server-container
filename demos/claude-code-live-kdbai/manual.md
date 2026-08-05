@@ -129,9 +129,10 @@ kdbai outbound strategy: passthrough (bearer-as-qipc-password)
 backend 'kdbai' mounted
 ```
 
-> **If the container exits immediately** with `Authentication error`: check that
-> `KDBAI_DB_OUTBOUND_STRATEGY=passthrough` is set. The pre-flight does an authenticated ping —
-> there is no anonymous fallback in passthrough mode.
+> **If the bundle is disabled immediately** with a reachability error, check the configured
+> host/port. With `KDBAI_DB_OUTBOUND_STRATEGY=passthrough`, no caller bearer exists at startup, so
+> the pre-flight checks socket reachability only; authentication and KDB.AI ACLs are exercised on
+> the first tool call.
 
 ---
 

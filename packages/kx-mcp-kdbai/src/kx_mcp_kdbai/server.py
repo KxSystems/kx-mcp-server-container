@@ -88,7 +88,10 @@ class McpServer:
             if self.db_config.mode == 'qipc' and self.db_config.qipc_tls:
                 self.logger.error("You are attempting to connect using QIPC with TLS enabled. Ensure you have set the environment variable `KX_SSL_CA_CERT_FILE` that CA certificate on your local filesystem that your TLS proxy is using. For local development and testing you can set `KX_SSL_VERIFY_SERVER=NO`")
             if "authentication error" in str(e).lower():
-                self.logger.error("Authentication is enabled on KDB.AI server - you need to set a valid KDBAI_PASSWORD environment variable")
+                self.logger.error(
+                    "Authentication is enabled on KDB.AI server - set valid "
+                    "KDBAI_DB_USERNAME and KDBAI_DB_PASSWORD environment variables"
+                )
             if "failed to open a session" in str(e).lower():
                 self.logger.error(f"Check your KDB.AI Server is running and accepting '{self.db_config.mode}' connections on port '{self.db_config.port}'")
             self.logger.error(

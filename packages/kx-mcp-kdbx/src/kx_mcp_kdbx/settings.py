@@ -59,6 +59,13 @@ class KDBConfig(BaseSettings):
         default=5,
         description="Default number of results to return from vector searches [env: KDBX_DB_K]"
     )
+    aimeta_cache_ttl: int = Field(
+        default=300,
+        ge=0,
+        description="""Seconds to cache aimeta metadata, including a negative probe. Set to 0 to
+        disable caching; use kdbx_refresh_metadata to pick up recompiled annotations sooner.
+        [env: KDBX_DB_AIMETA_CACHE_TTL]"""
+    )
     assert_identity: bool = Field(
         default=False,
         description="""Enable identity assertion: project the validated inbound principal into a
@@ -143,4 +150,3 @@ class AppSettings(BaseSettings):
         default_factory=KDBConfig,
         description="KDB-X database connection settings"
     )
-

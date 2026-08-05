@@ -8,8 +8,9 @@ requires-python = ">=3.10,<3.14"
 dependencies = [
     "fastmcp>=3,<4",
     "pykx>=4.0.0.b4",
-    "pydantic-settings",
+    "pydantic-settings>=2.14.2",
     "packaging",
+    "jsonschema>=4,<5",
     # Identity assertion: the fastmcp-free claims->q-dict projection (shared wire format).
     "kx-auth-core",
     # Capability check: the SQL tool's `@authorize` decorator is imported from kx_mcp_core.auth at

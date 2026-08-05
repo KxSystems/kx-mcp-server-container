@@ -67,12 +67,15 @@ index if/when one exists.
 
 | Backend | Bundle | Needs on the container host | Needs reachable |
 | --- | --- | --- | --- |
-| KDB-X (plain kdb+) | `kx-mcp-kdbx` | **PyKX license** — auto-resolved from a co-located kdb-x install (`q` on `PATH`); otherwise set `QLIC` to the license dir | A KDB-X process with the **SQL module initialized** through its compatibility interface (`.s`), default `127.0.0.1:5010`; AI libs (`.ai`) optional — without them the similarity-search tools are disabled, not broken |
-| KDB.AI | `kx-mcp-kdbai` | Nothing licensed (the `kdbai-client` SDK; qipc mode uses PyKX unlicensed path via the workspace pin) | A KDB.AI server, default `127.0.0.1:8082`, qipc or REST (`KDBAI_DB_MODE`) |
+| KDB-X (plain kdb+) | `kx-mcp-kdbx` | **PyKX license** — auto-resolved from a co-located kdb-x install (`q` on `PATH`); otherwise set `QLIC` to the license dir | A KDB-X process with the **SQL module initialized** through its compatibility interface (`.s`), default `127.0.0.1:5010`; AI libs (`.ai`) optional — without them the similarity-search tools are hidden, not broken |
+| KDB.AI | `kx-mcp-kdbai` | `kdbai-client>=2.0.0`; no KDB license on the MCP host (the KDB.AI Server deployment owns its license) | A KDB.AI server: qipc default `127.0.0.1:8082`, REST default `127.0.0.1:8081` (`KDBAI_DB_MODE`) |
 
-Each bundle runs an **eager pre-flight** at startup (connectivity → interfaces → optional
-features), logging `SUCCESS`/`ERROR` per check, and refuses to serve a broken backend. Per-backend
-setup detail (modules, TLS, embeddings) lives in each bundle's README:
+Requirements fall into three categories. **Mount-time hard requirements** are checked by the eager
+pre-flight; a failure disables that bundle while the parent serves healthy bundles. **Feature
+gates** hide only affected tools (KDB-X `.ai`). **Call-time prerequisites** leave tools visible but
+return a useful error when data, tables, indexes, embeddings, or a passthrough caller's credentials
+are missing. KDB.AI static/service-account startup opens an SDK session; passthrough startup has no
+caller bearer and checks socket reachability only. Per-backend setup detail lives in:
 [kdbx](../packages/kx-mcp-kdbx/README.md) · [kdbai](../packages/kx-mcp-kdbai/README.md).
 
 ## The production topology
@@ -123,12 +126,17 @@ Container serving (`KX_MCP_*`, read by the `kx-mcp` launcher):
 | `KX_MCP_NAME` | `kx-mcp` | Server instance name |
 | `KX_MCP_LOG_LEVEL` | `INFO` | The container's own logs (audit line, mount warnings) |
 
+The shipped defaults deliberately favor local development: bundle selection is explicit; HTTP binds
+to loopback; inbound auth and capability authz are off; backend TLS, identity assertion, and the
+KDB-X data gate are off; backend credentials are empty; and KDB.AI uses qipc. Treat these as a
+low-friction starting point, not a production security profile.
+
 Backend connection fragments (each owned by its bundle — full tables in the bundle READMEs):
 
 | Backend | Key variables (defaults) |
 | --- | --- |
-| kdbx | `KDBX_DB_HOST` (`127.0.0.1`) · `KDBX_DB_PORT` (`5010`) · `KDBX_DB_USERNAME`/`_PASSWORD`/`_PASSWORD_FILE` · `KDBX_DB_TLS` (`false`) · `KDBX_DB_TIMEOUT` (`1`) · `KDBX_DB_RETRY` (`2`) · `KDBX_DB_ASSERT_IDENTITY` (`false`) · vector-search: `KDBX_DB_EMBEDDING_CSV_PATH`, `KDBX_DB_METRIC` (`CS`), `KDBX_DB_K` (`5`) |
-| kdbai | `KDBAI_DB_HOST` (`127.0.0.1`) · `KDBAI_DB_PORT` (`8082`) · `KDBAI_DB_MODE` (`qipc`\|`rest`) · `KDBAI_DB_DATABASE_NAME` (`default`) · `KDBAI_DB_OUTBOUND_STRATEGY` + OIDC detail (see [auth guide](auth.md)) · hybrid-search weights `KDBAI_DB_VECTOR_WEIGHT`/`_SPARSE_WEIGHT` (`0.7`/`0.3`) |
+| kdbx | `KDBX_DB_HOST` (`127.0.0.1`) · `KDBX_DB_PORT` (`5010`) · `KDBX_DB_USERNAME`/`_PASSWORD`/`_PASSWORD_FILE` · `KDBX_DB_TLS` (`false`) · `KDBX_DB_TIMEOUT` (`1`) · `KDBX_DB_RETRY` (`2`) · `KDBX_DB_ASSERT_IDENTITY` (`false`) · semantic metadata cache: `KDBX_DB_AIMETA_CACHE_TTL` (`300`, `0` disables) · vector-search: `KDBX_DB_EMBEDDING_CSV_PATH`, `KDBX_DB_METRIC` (`CS`), `KDBX_DB_K` (`5`) |
+| kdbai | `KDBAI_DB_HOST` (`127.0.0.1`) · `KDBAI_DB_PORT` (mode default: qipc `8082`, REST `8081`; explicit wins) · `KDBAI_DB_MODE` (`qipc`\|`rest`, default `qipc`) · `KDBAI_DB_DATABASE_NAME` (`default`) · `KDBAI_DB_OUTBOUND_STRATEGY` + OIDC detail (see [auth guide](auth.md)) · hybrid-search weights `KDBAI_DB_VECTOR_WEIGHT`/`_SPARSE_WEIGHT` (`0.7`/`0.3`) |
 
 Auth variables (`KX_MCP_AUTH*`, `KX_MCP_AUTHZ*`, outbound strategies): the
 [auth guide](auth.md) is the single reference — not duplicated here.
@@ -147,10 +155,12 @@ Auth variables (`KX_MCP_AUTH*`, `KX_MCP_AUTHZ*`, outbound strategies): the
 
 | Symptom | Cause / fix |
 | --- | --- |
-| Bundle exits at startup: connectivity `ERROR` | The backend isn't reachable from the container host — check `*_DB_HOST`/`_PORT`, network path, and that the backend is actually up. The container refuses to serve a broken backend by design. |
+| Bundle disabled at startup: connectivity `ERROR` | The backend isn't reachable from the container host — check `*_DB_HOST`/`_PORT`, network path, and that the backend is actually up. The parent continues serving any healthy bundles. |
 | kdbx pre-flight: SQL interface `ERROR` | The target q process hasn't initialized the SQL module's compatibility interface — run `.s.init[]` on the host. See `examples/host.q` for the canonical bring-up. |
 | kdbx: `import pykx` fails at startup | No resolvable license: put the kdb-x `q` on `PATH` (co-located install) or set `QLIC` to the directory holding `kc.lic`. |
 | Similarity-search tools missing from `list_tools` | AI libs (`.ai`) not loaded on the q host — deliberate degradation, not a fault; load `kx.ai` to enable them. |
+| KDB.AI search tool is visible but fails | Search prerequisites are call-time: verify the database/table, embedding provider/model, dense index, and—when hybrid—sparse tokenizer/config and sparse index. |
+| First KDB.AI passthrough call fails | Startup checked socket reachability only; verify the caller bearer is accepted by KDB.AI and its principal has the required ACL. |
 | qIPC connect *times out* on macOS at `:5000` | AirPlay owns `:5000` on macOS and swallows connections — this is why the kdb-x default is `:5010`. Don't deploy a backend on `:5000` on a Mac. |
 | `401` on every authed call / client can't log in | Work the inbound checklist in the [auth guide](auth.md#troubleshooting) — issuer/audience mismatch and a missing/wrong `KX_MCP_AUTH_RESOURCE_URL` cover most cases. |
 | `uvx` fails resolving `kx-mcp-core` (401) | Wrong/missing Nexus credentials — set `UV_INDEX_KXI_NEXUS_{USERNAME,PASSWORD}` (read-only pair) or a `.netrc` entry. |
