@@ -40,11 +40,11 @@ r2:ok {reset[];
 / ---- 3. a stale principal cannot outlive a re-bind into a POLICY decision ------------------------
 / The security consequence of 1: a tenant-scoped policy must not authorise bob on alice's tenant.
 r3:ok {reset[];
-  setPolicy[{[p;a;r] $[a~`assert; 1b; (r~`trades) and `acme~p`tenant]}];
+  setPolicy[{[p;a;r] $[a~`assert; 1b; (r~`data.trades) and `acme~p`tenant]}];
   bind[`sub`tenant!(`alice;`acme)];
-  a:`acme~(authorize[`read;`trades])`tenant;        / alice IS in acme -> allowed
+  a:`acme~(authorize[`read;`data.trades])`tenant;   / alice IS in acme -> allowed
   bind[(enlist `sub)!enlist `bob];                  / refreshed token, no tenant claim at all
-  e:@[{authorize[`read;`trades];`ok};(::);{x}];
+  e:@[{authorize[`read;`data.trades];`ok};(::);{x}];
   setPolicy[{[p;a;r] 1b}];
   a and $[10h=type e; "denied"~6#e; 0b] };          / bob must NOT inherit acme -> denied
 

@@ -22,7 +22,7 @@ from kx_auth_core import (
 )
 
 
-def _req(action: str = "query", resource: str = "kdbx:sql") -> AuthzRequest:
+def _req(action: str = "query", resource: str = "kdbx.sql") -> AuthzRequest:
     return AuthzRequest(
         subject="alice",
         action=action,

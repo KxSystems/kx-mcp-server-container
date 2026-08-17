@@ -15,12 +15,12 @@ MAX_ROWS_RETURNED = 1000
 
 # Capability check: the @authorize decorator runs inside the tool's own context, reads the inbound
 # principal, and consults the configured authz strategy (KX_MCP_AUTHZ) over an MCP-semantic
-# (action;resource) — here `query`/`kdbx:sql`. For kdb-x set KX_MCP_AUTHZ=kdbx_rbac to route this to
+# (action;resource) — here `query`/`kdbx.sql`. For kdb-x set KX_MCP_AUTHZ=kdbx_rbac to route this to
 # the q `.kx.auth` policy engine over a *capability* grant set, distinct from the q-side data gate
 # applied in the body via `.s.e`. Unset = route-only (allow). A capability deny raises
 # AuthorizationDenied (a clean tool error) — distinct from the data-layer denial below, which the
 # except-clause maps to a structured permission_denied.
-@authorize(action="query", resource="kdbx:sql")
+@authorize(action="query", resource="kdbx.sql")
 async def run_query_impl(sqlSelectQuery: str, config=None) -> Dict[str, Any]:
     try:
         dangerous_keywords = ['INSERT', 'DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'CREATE']

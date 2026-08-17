@@ -72,7 +72,9 @@ testpaths = [
 ]
 # The example bundle is a composition/launcher test fixture, not a shipped backend or a workspace
 # package — it sits on the test path only so test_launcher can resolve `kx_mcp_example` by import.
-pythonpath = ["tests/fixtures/kx-mcp-example/src", "tests/deterministic"]
+# "tests" itself is on the path so both tiers can import the shared, tier-neutral `_pykx_env`
+# helper (tests/_pykx_env.py) without depending on either tier's own package.
+pythonpath = ["tests/fixtures/kx-mcp-example/src", "tests/deterministic", "tests"]
 # Exclude real-IdP tests from the default/CI run — they require a live Keycloak/Entra instance.
 # Run manually with: just test-keycloak
 addopts = "-m 'not realidp'"

@@ -3,11 +3,11 @@
 Checks whether a caller may invoke a tool — an MCP-level capability such as running a SQL
 query — as distinct from whether they may read the underlying data. The decision is delegated
 to the q backend's ``.kx.auth`` policy engine, called with an action/resource pair such as
-``(`query;`kdbx:sql)``.
+``(`query;`kdbx.sql)``.
 
-The same engine also enforces the data-level gate (e.g. ``(`read;`trades)``). The host's single
-``setPolicy`` routes by resource vocabulary — a namespaced ``kdbx:sql`` to the capability grants,
-a bare table symbol to the data grants — so one engine serves both concerns from two grant sets.
+The same engine also enforces the data-level gate (e.g. ``(`read;`data.trades)``). The host's single
+``setPolicy`` routes by resource vocabulary — ``kdbx.sql`` to the capability grants and
+``data.<table>`` to the data grants — so one engine serves both concerns from two grant sets.
 
 ``rbac_check`` is the adapter, registered as ``"kdbx_rbac"``. The ``@authorize`` decorator on the
 SQL tool routes here (via :func:`kx_auth_core.authz.decide`) when the container runs with
@@ -38,7 +38,7 @@ def rbac_check(conn: kx.QConnection, action: str, resource: str):
     through :func:`~kx_mcp_kdbx.utils.denial.is_denial`).
 
     ``action`` and ``resource`` are sent as q symbols (``kx.SymbolAtom``) so the policy can compare
-    them directly; a symbol carries a colon (e.g. ``kdbx:sql``) unchanged.
+    them directly; a symbol carries a dot (e.g. ``kdbx.sql``) unchanged.
     """
     return conn(".kx.auth.authorize", kx.SymbolAtom(action), kx.SymbolAtom(resource))
 
@@ -84,8 +84,8 @@ def kdbx_rbac_adapter(request: AuthzRequest) -> Union[bool, AuthzDecision]:
 
 # Self-register at import (mirrors the outbound built-ins in kx_auth_core.outbound.strategies).
 # Registration is inert until something calls decide(request, strategy="kdbx_rbac") — the caller is
-# the @authorize(action="query", resource="kdbx:sql") decorator on the SQL tool, active under
+# the @authorize(action="query", resource="kdbx.sql") decorator on the SQL tool, active under
 # KX_MCP_AUTHZ=kdbx_rbac. The SQL tool does not import this module, so server.py imports it for this
-# registration side effect. The `query`/`kdbx:sql` vocabulary is the convention this adapter and the
+# registration side effect. The `query`/`kdbx.sql` vocabulary is the convention this adapter and the
 # q-side capability grant set (`.kx.auth` setPolicy) both key on.
 register_authz_adapter("kdbx_rbac", kdbx_rbac_adapter)

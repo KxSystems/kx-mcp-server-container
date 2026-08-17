@@ -1,10 +1,14 @@
-"""q-level regression for the kx.auth identity-assertion gate.
+"""q-level regression for the kx.auth identity-assertion gate and the rest of its export surface.
 
-Runs ``kx_auth_assertion_gate.q`` in a real ``q`` process and asserts the module enforces the
-identity-assertion policy: bind[] default-denies until configure[], keys on the caller (assertPolicy),
-the two configure() password modes behave (delegate vs enforce), and setAssertPolicy overrides the
-default. This proves the module LOGIC; the live ``.z.u``-over-IPC property (a real second connection
-is refused at bind) is exercised separately, by a live demo and the kdb-x realidp lane.
+Runs ``kx_auth_assertion_gate.q`` in a real ``q`` process and asserts: bind[] default-denies until a
+policy grants ``assert`` on ``kx.identity`` via ``setPolicy`` (keyed on the caller's login), the data S/A/R
+path (authorize[]) is unaffected by the assert-gate; entitled[] (PEP-2's scope-down verb) over the
+full/partial/none/empty-input cases and its own require[] gate; configure[]'s malformed-arg guard and
+its delegate-before/enforce-after pwCheck behaviour; and the HTTP path — fromJson[]'s promotion,
+serveHttp[]'s per-request principal binding (case-insensitive header match, always cleared including
+on the wrapped handler raising), and activateHttp[]'s composition with a prior ``.z.ph``. This proves
+the module LOGIC; the live ``.z.u``-over-IPC property (a real second connection is refused at bind) is
+exercised separately, by a live demo and the kdb-x realidp lane.
 
 **Self-skipping**: needs a kdb-x install (a ``q`` binary) and a license. When either is absent — as in
 the license-free CI integration lane — the test skips rather than fails, so it costs nothing there and

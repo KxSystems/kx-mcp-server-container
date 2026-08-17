@@ -9,7 +9,7 @@ from kx_mcp_kdbx.utils.aimeta import MetadataCache, detect_metadata, metadata_gu
 
 # Imported for its registration side effect: self-registers the "kdbx_rbac" capability-check authz
 # adapter on the kx_auth_core.authz registry (module-bottom register_authz_adapter call). The
-# @authorize decorator on the SQL tool routes a `query`/`kdbx:sql` capability check here when
+# @authorize decorator on the SQL tool routes a `query`/`kdbx.sql` capability check here when
 # KX_MCP_AUTHZ=kdbx_rbac. This import is the sole reachability path — without it,
 # decide(strategy="kdbx_rbac") would fail closed on an unknown strategy.
 import kx_mcp_kdbx.utils.authz_kx_rbac  # noqa: F401

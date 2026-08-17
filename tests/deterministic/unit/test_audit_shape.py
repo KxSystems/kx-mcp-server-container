@@ -170,7 +170,7 @@ def test_dispatch_audit_shape_carries_allow_decision_and_adapter(alice, caplog):
     parent = make_parent("kx-mcp")
     mount_bundle(
         parent,
-        lambda: _gated_backend("kdbx", action="read", resource="kdbx:sql"),
+        lambda: _gated_backend("kdbx", action="read", resource="kdbx.sql"),
         namespace="kdbx",
     )
 

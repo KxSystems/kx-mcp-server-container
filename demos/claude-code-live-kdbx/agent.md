@@ -30,12 +30,12 @@ Then the human swaps the connection to **bob** (manual.md Step 4) and re-runs th
 - The agent discovers `kdbx_run_sql_query` from the server, not from this doc.
 - **As alice** (`viewer`+`trader`):
   - the `SELECT` returns AAPL rows (e.g. `187.45 / 100`, `188.10 / 120`) — she clears the capability
-    check (`query`/`kdbx:sql`) *and* the data gate (`read`/`trades`);
+    check (`query`/`kdbx.sql`) *and* the data gate (`read`/`data.trades`);
   - the `INSERT` is rejected by the SQL write-keyword blocklist (`Query contains dangerous keyword:
     INSERT`) — a tool-level guardrail, before any auth.
 - **As bob** (`viewer`):
   - the same `SELECT` returns `status: error`, `error_type: permission_denied`, message
-    *"Access denied by the data layer: denied: <sub> not permitted read on trades"* — bob passed the
+    *"Access denied by the data layer: denied: <sub> not permitted read on data.trades"* — bob passed the
     **capability** check (he *may* invoke the SQL tool) but the **data** gate denied the `trades`
     entitlement. The agent should report this as a data-layer denial and **not** crash or retry blindly;
   - the `INSERT` is rejected by the blocklist, same as alice.
@@ -46,14 +46,14 @@ Two **independent semantic RBAC sets** enforced over one `.kx.auth` policy engin
 asserted identity:
 
 - **The capability check (PEP-1, container-side, MCP-semantic):** *may this subject invoke this
-  tool?* — `query` on `kdbx:sql`, over a capability grant set.
+  tool?* — `query` on `kdbx.sql`, over a capability grant set.
 - **The data gate (PEP-2, q-side, data-semantic):** *for this data, what is permitted?* — `read` on
-  `trades`, over a data grant set, able to deny (and, later, scope-down).
+  `data.trades`, over a data grant set, able to deny (and, later, scope-down).
 
 bob's divergent outcome — capability allowed, data denied — is the headline: the two layers are
 genuinely separate. Even a route-only tool (no capability grant of its own) is still data-gated. The
 SQL write-keyword blocklist remains the floor beneath both. (The capability check is the
-`@authorize(action="query", resource="kdbx:sql")` decorator over the `kx_auth_core.authz` `kdbx_rbac`
+`@authorize(action="query", resource="kdbx.sql")` decorator over the `kx_auth_core.authz` `kdbx_rbac`
 adapter, active via `KX_MCP_AUTHZ=kdbx_rbac`; a capability-check deny raises a clean
 `AuthorizationDenied` tool error, distinct from the data gate's structured `permission_denied`
 envelope.)

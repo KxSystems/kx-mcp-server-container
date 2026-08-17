@@ -125,6 +125,18 @@ Container serving (`KX_MCP_*`, read by the `kx-mcp` launcher):
 | `KX_MCP_HOST` / `KX_MCP_PORT` | `127.0.0.1` / `8000` | HTTP bind (ignored for stdio) |
 | `KX_MCP_NAME` | `kx-mcp` | Server instance name |
 | `KX_MCP_LOG_LEVEL` | `INFO` | The container's own logs (audit line, mount warnings) |
+| `KX_MCP_EXIT_ON_MOUNT_FAILURE` | `false` | Terminate instead of serving without a backend whose pre-flight failed (see below) |
+
+**Mount-failure posture.** By default a backend whose eager pre-flight fails is disabled with a
+`WARNING` and the container keeps serving the backends that came up — the right behaviour when you
+mount several, since one unreachable database shouldn't take the others down. Set
+`KX_MCP_EXIT_ON_MOUNT_FAILURE=true` (or pass `--exit-on-mount-failure`) to make the process exit
+non-zero instead, so an orchestrator restarts it and the misconfiguration surfaces as a crash loop
+rather than a warning line. Recommended when you run **one backend per container**.
+
+Independently of that flag, requesting bundles and mounting **none** of them always exits non-zero:
+a parent with no backends serves no tools, so staying alive would only present a healthy-looking
+process with nothing behind it.
 
 The shipped defaults deliberately favor local development: bundle selection is explicit; HTTP binds
 to loopback; inbound auth and capability authz are off; backend TLS, identity assertion, and the

@@ -107,7 +107,7 @@ Metadata is filtered through the same optional KDB-X data-entitlement gate as ta
 references and function dependencies cannot reveal filtered tables. The administrative
 `kdbx_refresh_metadata` tool reloads recompiled annotations without restarting the container. It is
 route-only when `KX_MCP_AUTHZ` is unset (the default); when capability authz is configured, callers
-must have the `admin` capability for `kdbx:metadata`. See the
+must have the `admin` capability for `kdbx.metadata`. See the
 [KDB-X backend metadata guide](packages/kx-mcp-kdbx/README.md#semantic-metadata-with-aimeta) and
 [authorization guide](docs/auth.md#authorization-kx_mcp_authz).
 

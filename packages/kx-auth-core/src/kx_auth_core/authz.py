@@ -38,7 +38,7 @@ class AuthzRequest:
     """The question a capability check answers: may ``subject`` perform ``action`` on ``resource``?
 
     ``action`` (e.g. ``query`` / ``write`` / ``search`` / ``admin``) and ``resource`` (e.g.
-    ``kdbx:sql`` / ``kdbai:table`` / ``acme:package``) are a documented convention, not validated —
+    ``kdbx.sql`` / ``kdbai:table`` / ``acme:package``) are a documented convention, not validated —
     both this adapter and the q ``authorize[action;resource]`` gate key on the same strings.
     ``namespace`` is the mount namespace the primitive lives under (``kdbx`` / ``kdbai`` / ``acme``).
     ``claims`` is the validated inbound principal's raw claims (an audit/escape-hatch payload;

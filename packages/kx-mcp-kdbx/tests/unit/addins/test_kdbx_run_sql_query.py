@@ -167,7 +167,7 @@ class TestRunQueryImpl:
 
 
 class TestSqlToolCapabilityDecorator:
-    """The `@authorize(action="query", resource="kdbx:sql")` capability check is wired onto
+    """The `@authorize(action="query", resource="kdbx.sql")` capability check is wired onto
     `run_query_impl`.
 
     Drives the decorator with a *fake* authz strategy (no live q) to prove the wiring: an allow lets
@@ -243,7 +243,7 @@ class TestSqlToolCapabilityDecorator:
             await run_query_impl("SELECT * FROM trades")
 
         # The decorator runs before the body, so the message names the capability and the query never ran.
-        assert "query on kdbx:sql" in str(ei.value)
+        assert "query on kdbx.sql" in str(ei.value)
         conn.assert_not_called()
 
     @pytest.mark.anyio
@@ -299,14 +299,14 @@ class TestSqlToolDataGate:
             'kx_mcp_kdbx.addins.kdbx_run_sql_query.consult_data_gate',
             return_value=AuthzDecision(
                 allowed=False, adapter="kdbx_entitlements",
-                reason="bob not permitted read on trades"),
+                reason="bob not permitted read on data.trades"),
         )
 
         result = await run_query_impl("SELECT * FROM trades", config=self._config())
 
         assert result['status'] == 'error'
         assert result['error_type'] == 'permission_denied'
-        assert "bob not permitted read on trades" in result['message']
+        assert "bob not permitted read on data.trades" in result['message']
         consult.assert_called_once_with("read", ["trades"])
         # Only the tables[] fetch reached q — the .s.e query call never happened.
         assert conn.call_count == 1

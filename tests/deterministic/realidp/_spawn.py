@@ -13,28 +13,10 @@ import sys
 import time
 from pathlib import Path
 
+from _pykx_env import clean_env
+
 # tests/fixtures/kx-mcp-example/src — two parents up from realidp/, then into tests/fixtures/
 _FIXTURE_SRC = str(Path(__file__).parents[2] / "fixtures" / "kx-mcp-example" / "src")
-
-# Keys injected by the pytest process that must not leak into a fresh subprocess.
-# kx_mcp_kdbx.server sets PYKX_LICENSED=true; pykx adds PYKX_Q_LOADED_MARKER when it starts, and
-# also unconditionally OVERWRITES QHOME (to its own bundled q lib dir under site-packages) and
-# QPATH (to "<original QHOME>/mod" — which may not be where kx modules are actually installed),
-# plus sets PYKX_DIR/PYKX_EXECUTABLE/PYKX_UNDER_PYTHON. All are process-local side effects of any
-# `import pykx` happening anywhere in this pytest session (e.g. during collection of unrelated
-# test files) — in a fresh subprocess they cause either a "licensed/unlicensed conflict" (the
-# original kdbai_client case) or, for a PyKX-embedded bundle like kdbx, a spurious
-# "no valid q license" failure even though the license is genuinely there (confirmed empirically:
-# a clean env resolves it fine; the inherited/contaminated one doesn't).
-_PYKX_KEYS_TO_STRIP = {
-    "PYKX_LICENSED",
-    "PYKX_Q_LOADED_MARKER",
-    "QHOME",
-    "QPATH",
-    "PYKX_DIR",
-    "PYKX_EXECUTABLE",
-    "PYKX_UNDER_PYTHON",
-}
 
 
 def _free_port() -> int:
@@ -107,7 +89,7 @@ def _spawn_container(bundles: str = "example", extra_env: dict | None = None) ->
         jwks_uri = f"{kc_base}/realms/{kc_realm}/protocol/openid-connect/certs"
         issuer = f"{kc_base}/realms/{kc_realm}"
 
-    base_env = {k: v for k, v in os.environ.items() if k not in _PYKX_KEYS_TO_STRIP}
+    base_env = clean_env()
     env = {
         **base_env,
         "PYTHONPATH": os.pathsep.join([_FIXTURE_SRC, os.environ.get("PYTHONPATH", "")]),

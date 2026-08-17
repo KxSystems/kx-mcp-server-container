@@ -217,7 +217,7 @@ claim, matching `kx.auth`'s default claim search — no `setClaims` call needed 
 
 | Test | What it proves |
 |---|---|
-| `test_kdbx_ferry_alice_in_trader_group_allowed` | Full chain, no mocking: container validates alice's real bearer, ferries the principal via `.kx.auth.bind` on the service-account qIPC handle, `.s.e` wrapper calls `.kx.auth.authorize[`read;`trades]` — the `trader` group grant allows it, real trade rows come back. |
+| `test_kdbx_ferry_alice_in_trader_group_allowed` | Full chain, no mocking: container validates alice's real bearer, ferries the principal via `.kx.auth.bind` on the service-account qIPC handle, `.s.e` wrapper calls `.kx.auth.authorize[`read;`data.trades]` — the `trader` group grant allows it, real trade rows come back. |
 | `test_kdbx_ferry_bob_without_trader_group_denied` | bob is bound (the service-account connection may assert any identity — the bind-gate gates the *caller*, not the asserted principal) but ungranted; `.kx.auth.authorize` refuses, surfaced as a structured `permission_denied` envelope, not a raw q error. |
 | `test_kdbx_ferry_unbound_connection_denied_by_default` | A second raw qIPC connection (same service-account creds, `.kx.auth.bind` never called) is denied by default — proves the q module's own default-deny holds independent of the container's plumbing. |
 
@@ -239,6 +239,9 @@ even though the license is genuinely there. `just test-kdbx` scopes collection t
 conftest.py                                ← repo-root: crypto fixtures (keypair, mint, jwks_uri, mock_sts)
 tests/
   conftest.py                              ← spawn harness (spawn_container)
+  _pykx_env.py                             ← tier-neutral: strips pykx's process-wide env
+                                             contamination before spawning a pykx-backed child
+                                             (used by realidp/_spawn.py and test_kdbx_data_gate_e2e.py)
   docs/
     TESTING.md                             ← this file (what's tested / how it works / coverage tracker)
   deterministic/
@@ -257,8 +260,18 @@ tests/
       test_audit_logging.py                ← audit-line visibility + KX_MCP_LOG_LEVEL suppression
                                              + authenticated-subject-over-the-wire
       test_authz_integration.py            ← S/A/R seam over the wire, audit decision/adapter fields
+      test_composition_integration.py      ← bad-bundle graceful degradation + multi-bundle mount,
+                                             over the wire
       test_stdio_smoke.py                  ← STDIO transport smoke test
       test_outbound_integration.py         ← outbound container-wiring: rows 3.1b/3.2b/3.3
+      kx_auth_assertion_gate.q             ← kx.auth bind/authorize/entitled/configure/HTTP-path
+                                             logic, run by test_kx_auth_assertion_gate.py
+      test_kx_auth_assertion_gate.py       ← real-q driver for the file above (self-skips, no q/license)
+      kx_auth_rebind.q                     ← kx.auth bind's wholesale-replacement regression (KXI-72739)
+      test_kx_auth_rebind.py               ← real-q driver for the file above (self-skips, no q/license)
+      kdbx_data_gate_host.q                ← real-q host for the PEP-2 data-gate e2e test below
+      test_kdbx_data_gate_e2e.py           ← full chain: real q host + real container + real MCP
+                                             client, PEP-2 data gate (self-skips, no q/license)
     realidp/
       _spawn.py                            ← _free_port, _wait_until_listening
       envs/
@@ -521,7 +534,7 @@ gate (what infra the test needs), not a section marker.
 | 4.2 | Bind writes the ferry-shape dict onto a cached connection, re-keyed per principal | `packages/kx-mcp-kdbx/tests/unit/utils/test_kdbx.py` | `test_assert_identity_on_binds_ferry_shape`, `test_distinct_principals_get_distinct_cache_keys` | existing | critical | `assert_identity` config flag gates the bind call. Connection + PyKX are mocked — no real q. |
 | 4.3 | `assert_identity=False` (default) never reads or binds; high-cardinality claim values ferry as `CharVector`, not symbol | `packages/kx-mcp-kdbx/tests/unit/utils/test_kdbx.py` | `test_assert_identity_off_does_not_read_or_bind`, `test_assert_identity_on_without_principal_leaves_unbound`, `test_claims_string_values_charvec_not_symbol`, `test_raw_claims_ferried_for_q_side_promotion`, `test_assert_identity_defaults_false` | existing | critical | Guards a real PyKX gotcha: Python strings convert to q symbols by default, so high-cardinality claim values must be wrapped as `CharVector` to avoid interning them. |
 | 4.4 | `kx auth assert` exercises the projection + optional qIPC `--connect` bind end-to-end from a shell | `packages/kx-auth-cli/tests/test_assert_cli.py` | `test_project_only_emits_wire_dict`, `test_connect_binds_and_confirms`, `test_probe_denial_maps_to_exit_4`, `test_connect_without_pykx_is_error`, `test_assert_cmd_import_is_fastmcp_free` (8 functions total) | existing | critical | `--connect` is behind the `kx-auth-cli[qipc]` extra so the base CLI stays pykx-free. `--connect` uses a fake pykx stub in tests — no real q. |
-| 4.5 | Ferry live: real q loads `kx.auth`, `.kx.auth.bind` promotes an inbound identity, `.kx.auth.authorize`/`setPolicy` enforce a group×table×action grant (allow + default-deny) | `deterministic/realidp/kdbx/test_kdbx_ferry.py` | `test_kdbx_ferry_alice_in_trader_group_allowed`, `test_kdbx_ferry_bob_without_trader_group_denied`, `test_kdbx_ferry_unbound_connection_denied_by_default` | **existing** | critical | `just test-kdbx` — real live Keycloak `quants` realm (alice has `trader`, bob doesn't) + a throwaway real `q` process spawned by the test. Closes the gap above. |
+| 4.5 | Ferry live: real q loads `kx.auth`, `.kx.auth.bind` promotes an inbound identity, `.kx.auth.authorize`/`setPolicy` enforce a group×resource×action grant (allow + default-deny) | `deterministic/realidp/kdbx/test_kdbx_ferry.py` | `test_kdbx_ferry_alice_in_trader_group_allowed`, `test_kdbx_ferry_bob_without_trader_group_denied`, `test_kdbx_ferry_unbound_connection_denied_by_default` | **existing** | critical | `just test-kdbx` — real live Keycloak `quants` realm (alice has `trader`, bob doesn't) + a throwaway real `q` process spawned by the test. Closes the gap above. |
 
 ---
 
@@ -540,7 +553,7 @@ gate (what infra the test needs), not a section marker.
 | 5.2 | SQL write-keyword blocklist (`INSERT`/`DROP`/etc.) still rejects on a SELECT-only tool (no-regression floor) | `packages/kx-mcp-kdbx/tests/unit/addins/test_kdbx_run_sql_query.py` | (13 functions covering the blocklist + `@authorize` route-only/deny paths) | existing | critical | Confirmed not regressed by the `@authorize` decoration landing on `run_query_impl`. |
 | 5.3 | KDB.AI: two personas with different ACL grants get different results | `deterministic/realidp/kdbai/test_kdbai_acl.py` | `test_kdbai_acl_list_tables_differentiates_personas` (KA.2 headline) | **existing** | critical | Shipped as KA.1–KA.9 in the OAuth-ACL sub-section below. `@pytest.mark.realidp @pytest.mark.kdbai`, `just test-kdbai`. **AU-W/AU-D gap:** kdbai bundle is read-only (no create/insert/update/delete/drop tool); write/delete rows blocked until write tools are added to the bundle. |
 | 5.5 | Audit record answers who/what/backend/decision for one call per backend | `tests/deterministic/unit/test_audit_shape.py` | `test_dispatch_audit_shape_uniform_across_backends`, `test_dispatch_audit_shape_carries_allow_decision_and_adapter`, `test_dispatch_audit_shape_carries_deny_decision_and_adapter` | existing | important | Three fake bundles stand in for kdbx/kdbai/acme (middleware is backend-agnostic); "which backend" is inferred from the `target` namespace prefix, not a structured field — flagged as a follow-up, not a gap in this row. |
-| 5.6 | The data gate's (PEP-2) `obligations` scope-down consumed by a real tool; the capability check and data gate (PEP-1/PEP-2) don't double-gate the same request | — | — | **needed** | minor | `obligations` passes through the `AuthzDecision` today (`test_authz.py`) but no backend consumes it to filter output. No production backend needs this yet — tracked as a reference-implementation gap, not a blocker. |
+| 5.6 | The data gate's (PEP-2) `obligations` scope-down consumed by a real tool; the whole chain (Python `entitled_check` → real q `.kx.auth.entitled` → obligations → tool response) proven against a real q process, not mocked | `packages/kx-mcp-kdbx/tests/unit/addins/test_kdbx_run_sql_query.py`, `packages/kx-mcp-kdbx/tests/unit/utils/test_metadata_model.py` (mocked consult); `tests/deterministic/integration/test_kdbx_data_gate_e2e.py` (real q + real container) | `TestSqlToolDataGate`, `test_data_gate_filters_tables_and_reference_resolvers`, `test_function_dependencies_are_filtered_by_the_same_data_gate`, `test_direct_filtered_function_returns_generic_denial` (mocked); `test_all_entitled_persona_queries_trades_and_lists_it`, `test_none_entitled_persona_denied_on_secrets`, `test_partial_entitled_persona_gets_scope_down_guidance`, `test_data_gate_off_is_the_legacy_path` (real) | **existing** | important | **Live-q gap closed** (mirrors row 4.5): both the SQL tool's re-scope guidance and the `tables://all` metadata resource's filtered listing now have a real-q, real-container, real-MCP-client proof for all-entitled/none/partial/gate-off, closing the "no backend consumes it" gap this row previously tracked. |
 
 ### KDB.AI OAuth ACL integration (`@pytest.mark.realidp` + `@pytest.mark.kdbai`, manual/local — requires registry-gated `kdbai-db` image + Keycloak)
 

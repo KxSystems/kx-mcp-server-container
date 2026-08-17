@@ -4,18 +4,18 @@
 / a q-side data gate — then layers on a SECOND, distinct RBAC set so the demo shows the container
 / enforcing TWO semantic layers over ONE .kx.auth engine:
 / .
-/   the data gate (PEP-2, q-side)         : .s.e wraps every SQL query with authorize[`read;`trades] —
-/                                           a DATA-semantic check (group x table x action) over data grants.
-/   the capability check (PEP-1, container): the container calls authorize[`query;`kdbx:sql] BEFORE
+/   the data gate (PEP-2, q-side)         : .s.e wraps every SQL query with authorize[`read;`data.trades] —
+/                                           a DATA-semantic check (group x resource x action) over data grants.
+/   the capability check (PEP-1, container): the container calls authorize[`query;`kdbx.sql] BEFORE
 /                                           the query — an MCP-semantic check (group x capability) over
 /                                           capability grants (KX_MCP_AUTHZ=kdbx_rbac routes it here).
 / .
 / One engine, two callers, two grant SETS, ONE implementation: a single setPolicy fn evaluates one
-/ grant table (schema grp;act;res) — "data vs capability" is just which resource a row names (a bare
-/ table symbol like `trades vs a colon-namespaced MCP resource like `kdbx:sql), NOT two schemas or two
+/ grant table (schema grp;act;res) — "data vs capability" is just which resource a row names (a
+/ data resource like `data.trades vs a capability resource like `kdbx.sql), NOT two schemas or two
 / check fns. Grants are chosen to DIVERGE so the two sets are visible:
-/   - capability: `viewer`+`trader` may `query` `kdbx:sql   (both alice AND bob may invoke the tool)
-/   - data      : `trader` may read `trades`+`instruments and write `trades (alice only)
+/   - capability: `viewer`+`trader` may `query` `kdbx.sql   (both alice AND bob may invoke the tool)
+/   - data      : `trader` may read `data.trades`+`data.instruments and write `data.trades (alice only)
 / => alice clears both -> rows; bob clears the capability check (may use the SQL tool) but the data
 /    gate denies the trades data -> a clean permission_denied. The two-set headline.
 / .
@@ -34,7 +34,7 @@ system"l examples/host.q";
 / Tier 0 service account: the container connects as KDBX_DB_USERNAME/KDBX_DB_PASSWORD. The secret is
 / NOT held here — manual.md starts q with `-U <userpass>` (a standard kdb+ user:md5hash file), which
 / is the connection (password) gate. WHO may then ASSERT an identity is a policy grant (below):
-/ .kx.auth.bind consults the same policy with (`assert;`identity) keyed on the caller's login .z.u,
+/ .kx.auth.bind consults the same policy with (`assert;`kx.identity) keyed on the caller's login .z.u,
 / so only .demo.svcUser is trusted to assert. activate[] also wires the per-handle .z.po/.z.pc cleanup.
 .demo.svcUser:`kxmcp;
 / Groups source: leave kx.auth's DEFAULT search order (it checks the top-level `groups claim first —
@@ -47,15 +47,14 @@ system"l examples/host.q";
 / login-keyed admin grant (WHO may assert an identity) keys on the principal's `sub instead, because
 / the service account is a bare login with no roles. One matching fn evaluates both families — data
 / vs capability vs assert is just which table a row lives in, not a special case.
-/ DATA grants (the data gate): the `trader group may read both demo tables and write `trades.
-.demo.dataGrants:([] grp:3#`trader; act:`read`read`write; res:`trades`instruments`trades);
-/ CAPABILITY grants (the capability check): `viewer and `trader may `query the `kdbx:sql tool capability.
-/ Colon-namespaced MCP resources are built with `$"..." — a literal `kdbx:sql would mis-tokenise.
-.demo.capGrants:([] grp:`viewer`trader; act:`query`query; res:2#`$"kdbx:sql");
+/ DATA grants (the data gate): the `trader group may read both demo resources and write `data.trades.
+.demo.dataGrants:([] grp:3#`trader; act:`read`read`write; res:`data.trades`data.instruments`data.trades);
+/ CAPABILITY grants (the capability check): `viewer and `trader may `query the `kdbx.sql tool capability.
+.demo.capGrants:([] grp:`viewer`trader; act:`query`query; res:2#`kdbx.sql);
 .demo.grants:.demo.dataGrants,.demo.capGrants;
 / ADMIN grant (the bind[] assert gate): the service-account LOGIN (.z.u, carried in `sub) may `assert
-/ an `identity. Keyed on the user, not a group — its own small table, matched on `sub.
-.demo.adminGrants:([] usr:enlist .demo.svcUser; act:enlist `assert; res:enlist `identity);
+/ on `kx.identity. Keyed on the user, not a group — its own small table, matched on `sub.
+.demo.adminGrants:([] usr:enlist .demo.svcUser; act:enlist `assert; res:enlist `kx.identity);
 
 / ONE RBAC implementation: verb subsumption (a write/delete grant satisfies a read check), a no-op
 / for `query — so capability and data evaluate through the SAME check, no per-set branch. satisfiedBy
@@ -73,15 +72,15 @@ system"l examples/host.q";
 / --- the data gate: gate every SQL query the kdbx tool runs (q-side, data-semantic) ------------
 / The tool executes via .s.e, so wrapping it gates all SELECT traffic with a DATA check. The
 / capability check (the container-side check) runs earlier, against the same .kx.auth via
-/ authorize[`query;`kdbx:sql]. A real policy would derive (action;resource) from the parsed query;
-/ the demo fixes (`read;`trades) to keep the lesson on the two seams, not on SQL parsing. This gates
+/ authorize[`query;`kdbx.sql]. A real policy would derive (action;resource) from the parsed query;
+/ the demo fixes (`read;`data.trades) to keep the lesson on the two seams, not on SQL parsing. This gates
 / the TOOL PATH, not the IPC perimeter (activate[] wires .z.pw/.z.po/.z.pc, not .z.pg) — gating
 / arbitrary q access at the perimeter is a further enhancement, not covered by this demo.
 .s.realE:.s.e;
-.s.e:{[x] .kx.auth.authorize[`read;`trades]; .s.realE x};
+.s.e:{[x] .kx.auth.authorize[`read;`data.trades]; .s.realE x};
 
 -1 "";
 -1 "claude-code-live-kdbx host ready: identity assertion ON, TWO RBAC sets";
 -1 "  service account : ",string .demo.svcUser;
--1 "  capability check : groups x capability (default-deny) — `viewer`+`trader may `query `kdbx:sql";
--1 "  data gate        : groups x table x action (default-deny) — `trader may read demo metadata";
+-1 "  capability check : groups x capability (default-deny) — `viewer`+`trader may `query `kdbx.sql";
+-1 "  data gate        : groups x resource x action (default-deny) — `trader may read demo metadata";

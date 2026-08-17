@@ -3,7 +3,8 @@
 This is the fastmcp-bound half of the capability-check seam (the fastmcp-free decision contract is
 :mod:`kx_auth_core.authz`). ``@authorize(action, resource)`` wraps a primitive: inside the tool's
 own context it reads :func:`current_principal`, builds an :class:`~kx_auth_core.AuthzRequest`
-(``namespace`` = the part of ``resource`` before ``":"``), and calls :func:`~kx_auth_core.decide`
+(``namespace`` = the part of ``resource`` before ``":"`` or ``"."``), and calls
+:func:`~kx_auth_core.decide`
 against the configured strategy (``KX_MCP_AUTHZ``). A deny raises :class:`AuthorizationDenied`
 (rendered by fastmcp as a clean tool error — never a stack trace or a container crash); the
 decision is stashed on the :data:`current_authz_decision` contextvar so the parent
@@ -75,12 +76,13 @@ def _settings() -> AuthzSettings:
 def authorize(action: str, resource: str) -> Callable:
     """Gate a primitive with a capability check.
 
-    ``resource`` is ``"namespace:thing"`` by convention; ``namespace`` (the policy-file key, and
-    ``AuthzRequest.namespace``) is derived as the part before the first ``":"``. Applies to sync and
-    async primitives alike; ``functools.wraps`` preserves the signature so fastmcp's ``@tool``
-    introspection is unaffected (place ``@authorize`` *below* ``@mcp.tool()``).
+    ``resource`` is ``"namespace.thing"`` or ``"namespace:thing"`` by convention; ``namespace``
+    (the policy-file key, and ``AuthzRequest.namespace``) is derived as the part before the first
+    separator. Applies to sync and async primitives alike; ``functools.wraps`` preserves the
+    signature so fastmcp's ``@tool`` introspection is unaffected (place ``@authorize`` *below*
+    ``@mcp.tool()``).
     """
-    namespace = resource.split(":", 1)[0]
+    namespace = resource.split(":", 1)[0].split(".", 1)[0]
 
     def deco(fn: Callable) -> Callable:
         if inspect.iscoroutinefunction(fn):

@@ -8,8 +8,10 @@
 / Two identities: the service account authenticates the *connection* (via .z.pw, wired by activate[]);
 / the *asserted principal* never logs in — it is bound post-connect. bind[] does NOT trust the mere
 / connection: it asks the SAME authorization policy WHO may assert — an S/A/R grant keyed on the
-/ caller's login .z.u, action `assert on `identity (default-deny). So "who may assert" is a host grant
+/ caller's login .z.u, action `assert on `kx.identity (default-deny). So "who may assert" is a host grant
 / in the one policy (see the demo), not a module built-in.
+/ The `kx.* resource root is reserved for KX module-owned control-plane resources (`kx.identity,
+/ `kx.rbac, and `kx.q); hosts use `data.<table> or their own application root, never custom `kx.* names.
 / .
 / Load (the consumer MUST assign it to the global `.kx.auth` so the container's qIPC call
 / `.kx.auth.bind` resolves — see the design-doc caveat):
@@ -130,14 +132,14 @@ promote:{[p]
 / Bind the asserted principal to the current handle. Called by the trusted container right after it
 / connects and before the first query. Does NOT trust the mere connection: it first asks the SAME
 / authorization policy WHO may assert — an S/A/R decision with the CALLER's login (.z.u) as subject
-/ and (`assert;`identity) as action/resource (default-deny, since `policy` is deny-all until set).
+/ and (`assert;`kx.identity) as action/resource (default-deny, since `policy` is deny-all until set).
 / This runs pre-bind, so it consults `policy` directly — not authorize[]/require[], which need an
 / already-bound principal. On allow, promotes (canonicalises) and stores. Idempotent per handle, and a
 / re-bind on a live handle REPLACES the principal wholesale — no field of the previous one survives.
 bind:{[principal]
   caller:(enlist `sub)!enlist .z.u;
-  if[not policy[caller; `assert; `identity];
-    '"denied: caller ",string[.z.u]," not permitted to assert identity (grant `assert on `identity via setPolicy)"];
+  if[not policy[caller; `assert; `kx.identity];
+    '"denied: caller ",string[.z.u]," not permitted to assert identity (grant `assert on `kx.identity via setPolicy)"];
   / the inner enlist wraps the principal as a one-row table — see the `bound` comment for why that is
   / what makes this a wholesale replacement instead of a column-wise upsert.
   bound::bound,(enlist .z.w)!enlist enlist promote principal; };
@@ -164,9 +166,9 @@ require:{[]
 
 / ============================ authorization seam (S/A/R) ============================
 / The data-level Subject / Action / Resource gate. Subject = the bound principal (require[] enforces a
-/ valid one first, default-deny); Action / Resource are caller-supplied symbols (e.g. `read on `trades).
+/ valid one first, default-deny); Action / Resource are caller-supplied symbols (e.g. `read on `data.trades).
 / Defers the allow/deny decision to the installed policy (default-deny). Signals 'denied on refusal;
-/ returns the principal on allow so a caller can `p:.kx.auth.authorize[`read;`trades]` and use it.
+/ returns the principal on allow so a caller can `p:.kx.auth.authorize[`read;`data.trades]` and use it.
 authorize:{[action;resource]
   principal:require[];
   if[not policy[principal;action;resource];

@@ -1,12 +1,12 @@
 # kdbx ferry live lane
 
 Proves the kdbx "ferry" identity-assertion strategy — `.kx.auth.bind` promoting an inbound
-identity onto a q connection, `.kx.auth.authorize`/`setPolicy` enforcing a group×table×action
+identity onto a q connection, `.kx.auth.authorize`/`setPolicy` enforcing a group×resource×action
 grant — end-to-end against a **real** `q` process and a **real** live Keycloak IdP. No mocking:
 
     MCP client --(Bearer Keycloak-token)--> container [KX_MCP_AUTH=jwks, quants realm]
         --> kdbx tool --(assert_identity: .kx.auth.bind)--> real q
-            --> .kx.auth.authorize[`read;`trades] (`trader` group grant, default-deny)
+            --> .kx.auth.authorize[`read;`data.trades] (`trader` group grant, default-deny)
 
 Unlike `kdbai/` (which connects to an already-running managed backend), kdbx's backend is
 plain kdb+ — there's no pre-existing service to provision, so **this lane spawns its own
@@ -58,7 +58,7 @@ uv run pytest tests/deterministic/realidp/kdbx -m kdbx -v
 
 | Test | What it proves |
 |---|---|
-| `test_kdbx_ferry_alice_in_trader_group_allowed` | Full chain, no mocking: the container validates alice's real Keycloak bearer, ferries her principal via `.kx.auth.bind` on the service-account qIPC handle, and `.s.e`'s wrapper calls `.kx.auth.authorize[`read;`trades]` — the `trader` group grant allows it, real trade rows come back. |
+| `test_kdbx_ferry_alice_in_trader_group_allowed` | Full chain, no mocking: the container validates alice's real Keycloak bearer, ferries her principal via `.kx.auth.bind` on the service-account qIPC handle, and `.s.e`'s wrapper calls `.kx.auth.authorize[`read;`data.trades]` — the `trader` group grant allows it, real trade rows come back. |
 | `test_kdbx_ferry_bob_without_trader_group_denied` | bob's principal *is* bound (the service-account connection is trusted to assert any identity — the bind-gate gates the caller, not the asserted principal) but he lacks `trader`; `.kx.auth.authorize` refuses. The q-side `'denied: ...` signal is translated into a structured `{"status":"error","error_type":"permission_denied",...}` envelope, not a raw stack trace. |
 | `test_kdbx_ferry_unbound_connection_denied_by_default` | A second raw qIPC connection, opened directly against the ferry host with the same service-account creds but where `.kx.auth.bind` is **never called**, is denied by default. Proves the q module's own default-deny holds on its own terms — not merely because the container happens to always bind before querying. |
 
@@ -71,10 +71,10 @@ uv run pytest tests/deterministic/realidp/kdbx -m kdbx -v
   `examples/host.q` smoke-test host).
 - `.kx.auth:use`kx.auth` — loads the identity-assertion module from `~/.kx/mod/kx/auth`
   (symlinked to [`modules/kx/auth/`](../../../../modules/kx/auth/) by `just install-modules`).
-- `setPolicy`: the real Keycloak `trader` group may `read`/`write` `trades` (default-deny); the
-  service-account login (`kxmcp`, matching `KDBX_DB_USERNAME`) may `assert` an `identity` (the
+- `setPolicy`: the real Keycloak `trader` group may `read`/`write` `data.trades` (default-deny); the
+  service-account login (`kxmcp`, matching `KDBX_DB_USERNAME`) may `assert` `kx.identity` (the
   `bind[]` caller-gate).
-- `.s.e` is wrapped so every SQL query is gated by `.kx.auth.authorize[`read;`trades]`.
+- `.s.e` is wrapped so every SQL query is gated by `.kx.auth.authorize[`read;`data.trades]`.
 
 `kdbx_ferry_container_url` (session-scoped, depends on the fixture above) spawns the MCP
 container itself via the shared `_spawn_container` helper: `--bundles kdbx`, `KX_MCP_AUTH=jwks`

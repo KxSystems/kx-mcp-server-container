@@ -7,11 +7,16 @@ This is the convenience path for a simple CLI invocation or pointing an MCP clie
 extra glue code. It is built from the same `kx_mcp_core.assembly` seam as the hand-written glue in
 `server.py` — nothing the launcher does is unavailable to a few lines of glue. Inbound auth is
 resolved from `KX_MCP_AUTH`; it defaults to off (the single-principal bundling posture).
+
+Both assembly mount postures are reachable from the CLI: the default forgiving `try_mount_bundle`,
+and the strict `mount_bundle` behind `--exit-on-mount-failure` / `KX_MCP_EXIT_ON_MOUNT_FAILURE` for
+one-backend-per-container deployments that want a failed pre-flight to terminate the process.
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from typing import Optional, Sequence
@@ -22,36 +27,69 @@ from .assembly import (
     BUNDLE_PACKAGE_PREFIX,
     load_build_server,
     make_parent,
+    mount_bundle,
     try_mount_bundle,
 )
 from .auth import AuthSettings, build_auth_provider, configure_authz
 from .logging import configure_logging
+
+logger = logging.getLogger(__name__)
+
+_TRUTHY = {"1", "true", "yes", "on"}
 
 
 def _parse_bundles(raw: str | None) -> list[str]:
     return [b.strip() for b in raw.split(",")] if raw else []
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
+
 def build_app(
     bundles: Sequence[str],
     name: str = "kx-mcp",
     auth_settings: Optional[AuthSettings] = None,
+    exit_on_mount_failure: bool = False,
 ) -> FastMCP:
     """Assemble a parent server with each named bundle mounted under its own namespace.
 
     Inbound auth is resolved from ``auth_settings`` (read from ``KX_MCP_AUTH*`` env by default) and
-    passed to the parent, so it guards every mounted backend. Mounts via ``try_mount_bundle`` so an
-    unreachable backend is disabled with a warning rather than taking the whole container down — the
-    zero-code path honours the same "never crash the container" invariant as the hand-written glue
-    in ``server.py``.
+    passed to the parent, so it guards every mounted backend.
+
+    Mount posture, matching the hand-written glue in ``server.py``:
+
+    * default — mount via :func:`try_mount_bundle`, so an unreachable backend is disabled with a
+      warning while the backends that came up keep serving ("never crash the container").
+    * ``exit_on_mount_failure=True`` — mount via the strict :func:`mount_bundle`, letting a failed
+      pre-flight's ``SystemExit`` propagate. An operator running one backend per container wants the
+      process to die so the orchestrator restarts it and surfaces the misconfiguration.
+
+    Regardless of that flag, requesting bundles and mounting **none** of them exits non-zero: a
+    parent with no backends cannot serve a single tool, so staying alive only hides the cause.
 
     NOTE: importing a bundle may run its own settings/CLI parsing at import time, so callers that
     have their own CLI flags should clear ``sys.argv`` before calling this (the launcher does).
     """
     parent = make_parent(name, auth=build_auth_provider(auth_settings or AuthSettings()))
+    mounted = 0
     for short_name in bundles:
         build_server = load_build_server(f"{BUNDLE_PACKAGE_PREFIX}{short_name}")
-        try_mount_bundle(parent, build_server, namespace=short_name)
+        if exit_on_mount_failure:
+            # Strict: the bundle's own pre-flight ERROR log states the cause, and its sys.exit(1)
+            # propagates out of here with its exit code intact.
+            mount_bundle(parent, build_server, namespace=short_name)
+            mounted += 1
+        elif try_mount_bundle(parent, build_server, namespace=short_name):
+            mounted += 1
+
+    if bundles and not mounted:
+        logger.error(
+            "no backends mounted of %d requested (%s) — nothing to serve; exiting",
+            len(bundles),
+            ", ".join(bundles),
+        )
+        raise SystemExit(1)
     return parent
 
 
@@ -81,6 +119,16 @@ def main(argv: list[str] | None = None) -> None:
         help="Level for the container's own logs — the audit line and mount warnings. "
         "Defaults to $KX_MCP_LOG_LEVEL or INFO.",
     )
+    parser.add_argument(
+        "--exit-on-mount-failure",
+        action="store_true",
+        default=_env_flag("KX_MCP_EXIT_ON_MOUNT_FAILURE"),
+        help="Terminate instead of serving without a backend whose pre-flight failed. Off by "
+        "default (an unreachable backend is disabled with a warning and the rest keep serving); "
+        "turn it on for a one-backend-per-container deployment that wants the orchestrator to "
+        "restart the process and surface the misconfiguration. "
+        "Defaults to $KX_MCP_EXIT_ON_MOUNT_FAILURE.",
+    )
     args = parser.parse_args(argv)
 
     # Configure the container's own logging before assembly so audit lines and any mount-time
@@ -100,7 +148,7 @@ def main(argv: list[str] | None = None) -> None:
     # Bundles may CLI-parse their own settings at import; don't let them see our flags.
     sys.argv = [sys.argv[0]]
 
-    app = build_app(bundles, name=args.name)
+    app = build_app(bundles, name=args.name, exit_on_mount_failure=args.exit_on_mount_failure)
     if args.transport == "stdio":
         app.run(transport="stdio")
     else:

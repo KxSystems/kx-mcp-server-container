@@ -4,7 +4,7 @@ Exercises the full chain, with no mocking:
 
     MCP client --(Bearer Keycloak-token)--> container [KX_MCP_AUTH=jwks, quants realm]
         --> kdbx tool --(assert_identity: .kx.auth.bind)--> real q
-            --> .kx.auth.authorize[`read;`trades] (`trader` group grant, default-deny)
+            --> .kx.auth.authorize[`read;`data.trades] (`trader` group grant, default-deny)
 
 Before this test, the kx.auth module's bind/authorize/setPolicy logic had automated coverage only
 in isolation (`test_kx_auth_assertion_gate.py`, a hand-built principal dict, no container, no
@@ -41,7 +41,7 @@ def test_kdbx_ferry_alice_in_trader_group_allowed(kdbx_ferry_container_url, alic
 
     Proves the full chain: the container validates her inbound bearer, projects + ferries the
     principal via .kx.auth.bind on the (service-account) qIPC handle, and q's .s.e wrapper calls
-    .kx.auth.authorize[`read;`trades] — which the `trader` group grant allows.
+    .kx.auth.authorize[`read;`data.trades] — which the `trader` group grant allows.
     """
     async def go() -> dict:
         async with Client(StreamableHttpTransport(kdbx_ferry_container_url, auth=alice_token)) as c:
@@ -98,9 +98,9 @@ def test_kdbx_ferry_unbound_connection_denied_by_default(kdbx_ferry_host):
     host, port, svc_user, svc_password = kdbx_ferry_host
     conn = kx.SyncQConnection(host=host, port=port, username=svc_user, password=svc_password, timeout=5)
     try:
-        # PyKX converts a Python str -> q symbol, so "read"/"trades" arrive as `read/`trades.
+        # PyKX converts Python strings to q symbols; the host checks `read on `data.trades.
         with pytest.raises(Exception) as exc_info:
-            conn(".kx.auth.authorize", "read", "trades")
+            conn(".kx.auth.authorize", "read", "data.trades")
         assert "denied" in str(exc_info.value).lower(), (
             f"expected a q-side 'denied signal, got: {exc_info.value!r}"
         )

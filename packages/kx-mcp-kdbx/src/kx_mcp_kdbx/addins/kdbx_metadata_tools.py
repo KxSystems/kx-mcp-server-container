@@ -34,7 +34,7 @@ async def kdbx_get_table_metadata_impl(
         return unexpected_error_document(str(error))
 
 
-@authorize(action="admin", resource="kdbx:metadata")
+@authorize(action="admin", resource="kdbx.metadata")
 async def kdbx_refresh_metadata_impl(config=None, cache=None) -> Dict[str, Any]:
     try:
         conn = get_kdb_connection(config)

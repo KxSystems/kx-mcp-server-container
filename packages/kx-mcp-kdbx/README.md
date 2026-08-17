@@ -20,7 +20,7 @@ bundle has no standalone server of its own — `build_server()` just returns a c
 > table/column discovery. Prefer `tables://kdbx/{table}` or `kdbx_get_table_metadata` and
 > `functions://kdbx/{function}` for token-efficient lookups. The administrative
 > `kdbx_refresh_metadata` tool is route-only under the default unset authz posture; configured
-> capability authz must grant `admin` on the `kdbx` namespace (`kdbx:metadata` is the recorded
+> capability authz must grant `admin` on the `kdbx` namespace (`kdbx.metadata` is the recorded
 > resource convention). See [Semantic metadata with aimeta](#semantic-metadata-with-aimeta).
 
 ## Table of contents
@@ -146,8 +146,8 @@ concern — they belong to the container (`KX_MCP_*`), since the backend is moun
 | Default `k` | `KDBX_DB_K` | `5` | Default neighbours returned |
 | aimeta cache TTL | `KDBX_DB_AIMETA_CACHE_TTL` | `300` | Seconds to cache metadata (including absence); `0` disables caching |
 | Identity assertion | `KDBX_DB_ASSERT_IDENTITY` | `false` | Opt-in identity propagation — see below |
-| Capability check (PEP-1) | `KX_MCP_AUTHZ=kdbx_rbac` _(container env)_ | _(unset = route-only)_ | Container-side capability gates on the SQL tool (`query` / `kdbx:sql`) and metadata refresh (`admin` / `kdbx:metadata`). Setting `KX_MCP_AUTHZ=kdbx_rbac` routes both decorators to q `.kx.auth` over a *capability* grant set, distinct from the q-side data gate (PEP-2). Requires `KDBX_DB_ASSERT_IDENTITY` so a principal is bound. Unset leaves both tools route-only. |
-| Data gate (PEP-2) | `KDBX_DB_DATA_GATE` | `false` | A container-side *explicit consult* of the q data gate: before a query runs, the tool asks `.kx.auth.entitled[action;tables]` (one round-trip, on the bound per-principal handle) for the tables the query references and acts on the verdict — allow, structured `permission_denied`, or **scope-down**: the table listing is filtered to the entitled subset; a partially-entitled SQL query gets a denial naming the entitled tables so the agent re-scopes (SQL is never rewritten). Requires `KDBX_DB_ASSERT_IDENTITY=true` (config-validated) and a `kx.auth` module that ships `entitled` (pre-flight-checked). Off = data gating (if any) happens only via a host-side `.s.e` wrap, not this seam. |
+| Capability check (PEP-1) | `KX_MCP_AUTHZ=kdbx_rbac` _(container env)_ | _(unset = route-only)_ | Container-side capability gates on the SQL tool (`query` / `kdbx.sql`) and metadata refresh (`admin` / `kdbx.metadata`). Setting `KX_MCP_AUTHZ=kdbx_rbac` routes both decorators to q `.kx.auth` over a *capability* grant set, distinct from the q-side data gate (PEP-2). Requires `KDBX_DB_ASSERT_IDENTITY` so a principal is bound. Unset leaves both tools route-only. |
+| Data gate (PEP-2) | `KDBX_DB_DATA_GATE` | `false` | A container-side *explicit consult* of the q data gate: before a query runs, the tool asks `.kx.auth.entitled` (one round-trip, on the bound per-principal handle) about `data.<table>` resources for the physical tables the query references, then maps the allowed resource paths back to table names. It acts on the verdict — allow, structured `permission_denied`, or **scope-down**: the table listing is filtered to the entitled subset; a partially-entitled SQL query gets a denial naming the entitled tables so the agent re-scopes (SQL is never rewritten). Requires `KDBX_DB_ASSERT_IDENTITY=true` (config-validated) and a `kx.auth` module that ships `entitled` (pre-flight-checked). Off = data gating (if any) happens only via a host-side `.s.e` wrap, not this seam. |
 | Password file | `KDBX_DB_PASSWORD_FILE` | _(empty)_ | Read the service-account password from a file (overrides `KDBX_DB_PASSWORD`) — for K8s/Docker mounted secrets |
 
 Resolution order: env vars > `.env` file > defaults.
@@ -184,7 +184,7 @@ single-principal posture (no bind), so a vanilla kdb+ is unaffected. When on:
    .kx.auth:use`kx.auth;                                       / MUST bind to the global `.kx.auth`
    .kx.auth.configure[(`kxmcp;"service-account-pw")];          / dev/reference verifier; see below
    .kx.auth.setClaims[(enlist `groups)!enlist "realm_access.roles"]; / where to read groups (host owns it)
-   .kx.auth.setPolicy[myGrantFn];                              / required — must grant the svc login `assert on `identity (bind is gated by this default-deny policy)
+   .kx.auth.setPolicy[myGrantFn];                              / required — must grant the svc login `assert on `kx.identity (bind is gated by this default-deny policy)
    .kx.auth.activate[];                                        / wire .z.pw / .z.po / .z.pc (qIPC)
    / .kx.auth.activateHttp[];                                  / OPTIONAL: wire .z.ph / .z.pp (thin HTTP)
    ```
@@ -193,7 +193,7 @@ single-principal posture (no bind), so a vanilla kdb+ is unaffected. When on:
    decision function, `authorize[action;resource]` enforces it, default-deny until set), and `setClaims`
    to point promotion at the right claim path (default search `groups`→`realm_access.roles`→`roles`).
    `bind` itself consults that same policy — the connecting login needs an `` `assert `` grant on
-   `` `identity `` or every assertion is refused (see the
+   `` `kx.identity `` or every assertion is refused (see the
    [module README](../../modules/kx/auth/README.md)).
    The eager pre-flight verifies `.kx.auth.bind` is defined and disables this bundle if not.
 2. **Configure one credential source on each side.** On the MCP side, set
@@ -204,7 +204,7 @@ single-principal posture (no bind), so a vanilla kdb+ is unaffected. When on:
    the secret. Production deployments should normally preserve platform q authentication and mount
    the MCP-side password as a secret.
    The service-account credentials are the highest-trust secret here—holding them lets the
-   container attempt identity assertion, while the policy's explicit `` `assert ``/`` `identity ``
+   container attempt identity assertion, while the policy's explicit `` `assert ``/`` `kx.identity ``
    grant determines whether q accepts it.
 3. **TLS:** strongly recommended (the service-account credential + asserted principal otherwise cross
    qIPC in cleartext). The pre-flight only **warns** when TLS is off (keeps the dev/loopback path
@@ -245,7 +245,7 @@ The bundle registers **bare** primitive names (`run_sql_query`, …); the `kdbx_
 by the container's `mount(namespace="kdbx")`.
 
 `kdbx_refresh_metadata` asks aimeta to reload a recompiled document and refreshes this mounted
-backend's cache. It carries `@authorize(action="admin", resource="kdbx:metadata")`: authz unset keeps
+backend's cache. It carries `@authorize(action="admin", resource="kdbx.metadata")`: authz unset keeps
 the single-principal route-only posture, while configured static or kdb-x RBAC must grant the
 `admin` capability explicitly.
 

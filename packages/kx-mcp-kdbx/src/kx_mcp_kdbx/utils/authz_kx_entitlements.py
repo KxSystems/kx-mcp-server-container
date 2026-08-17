@@ -1,7 +1,7 @@
 """kdb-x data-gate adapter — the entitlement consult used by the SQL tool and table-listing resource.
 
 Where :mod:`authz_kx_rbac` answers *may this subject invoke the tool at all?* (an MCP-semantic
-``(action;resource)`` capability check like ``(`query;`kdbx:sql)``), this module answers a
+``(action;resource)`` capability check like ``(`query;`kdbx.sql)``), this module answers a
 *data-semantic* question: *of the data you asked for, what may you see?* It puts that question to
 the same q ``.kx.auth`` engine on the **bound per-principal handle**, via the one-round-trip
 ``.kx.auth.entitled[action;resources]`` (the scope-down companion to ``authorize``). It is driven
@@ -48,6 +48,11 @@ logger = logging.getLogger(__name__)
 
 ADAPTER_NAME = "kdbx_entitlements"
 
+# The canonical q-facing namespace for physical table resources. Keep this distinct from
+# RESOURCE_PREFIX, which is the container-internal encoding used to carry a set of physical table
+# names through AuthzRequest before the adapter consults q.
+Q_DATA_RESOURCE_PREFIX = "data."
+
 # The resource convention for a data-gate consult: the derived table set rides in the
 # AuthzRequest's resource string as `kdbx:data:<t1>,<t2>,...` (action/resource vocabulary is a
 # convention, not validated). Table names cannot contain a comma, so the join is unambiguous.
@@ -74,16 +79,35 @@ def tables_from_resource(resource: str) -> list[str]:
     return [t for t in resource[len(RESOURCE_PREFIX):].split(",") if t]
 
 
+def q_resource_for_table(table: str) -> str:
+    """Map a physical table name to the canonical q-facing data resource."""
+    return f"{Q_DATA_RESOURCE_PREFIX}{table}"
+
+
 def entitled_check(conn: kx.QConnection, action: str, resources: Sequence[str]) -> list[str]:
     """Consult q ``.kx.auth.entitled[action;resources]`` — the allowed subset, one round-trip.
 
-    Sent as q symbols (``SymbolAtom``/``SymbolVector``) so the host policy compares them directly.
+    ``resources`` are physical table names used by the SQL/tool layer. They are sent to q as
+    ``data.<table>`` symbols, keeping the grant vocabulary distinct from q's physical namespace,
+    and the returned resource symbols are mapped back to the original table names. Unexpected q
+    results are ignored so a malformed or over-broad backend response cannot confer access.
+
     Raises the q ``'denied: ...`` signal when no valid principal is bound (require[]'s default-deny)
     — the caller maps it; any other error is an infrastructure failure the adapter re-raises so
     ``decide()`` fails closed.
     """
-    result = conn(".kx.auth.entitled", kx.SymbolAtom(action), kx.SymbolVector(list(resources)))
-    return [str(s) for s in result.py()]
+    resource_to_table = {q_resource_for_table(table): table for table in resources}
+    result = conn(
+        ".kx.auth.entitled",
+        kx.SymbolAtom(action),
+        kx.SymbolVector(list(resource_to_table)),
+    )
+    allowed_resources = {str(resource) for resource in result.py()}
+    return [
+        table
+        for resource, table in resource_to_table.items()
+        if resource in allowed_resources
+    ]
 
 
 def kdbx_entitlements_adapter(request: AuthzRequest) -> Union[bool, AuthzDecision]:

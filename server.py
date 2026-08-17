@@ -14,6 +14,11 @@ pre-flight fails (its `build_server()` calls `sys.exit(1)` when its database is 
 disabled with a warning while the container keeps serving the backends that did come up — the
 "never crash the container" invariant. With no backend reachable, the parent still starts (bare).
 
+That last part is a *glue* choice, and this file is the demonstration of glue owning it: swap in the
+strict `mount_bundle` to have a failed pre-flight terminate the process instead. The launcher makes
+the same choice policy — `--exit-on-mount-failure` for the strict mount, and an unconditional
+non-zero exit when it mounts no backend at all.
+
 Inbound auth is resolved from KX_MCP_AUTH and passed to the parent, guarding every mounted backend;
 it defaults to off (the single-principal bundling posture). The subject/action/resource authorization
 seam and outbound identity propagation are deferred control-plane slots that attach in kx-mcp-core

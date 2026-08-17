@@ -136,11 +136,92 @@ class TestMcpServer:
         with pytest.raises(SystemExit):
             McpServer(mock_config)
 
+    def _identity_side_effects(self, mocker, *, bind_available=True, entitled_available=True):
+        """The conn() call sequence for a pre-flight that reaches the identity-assertion checks:
+        version, SQL-interface, AI-libs, the aimeta presence probe (made falsy so `_fetch_ipc`
+        stops after one call), then `.kx.auth.bind`/`.kx.auth.entitled` availability."""
+        mock_version_result = mocker.Mock()
+        mock_version_result.py.return_value = b'0.1.2'
+        mock_sql_check_result = mocker.Mock()
+        mock_sql_check_result.py.return_value = True
+        mock_ai_check_result = mocker.Mock()
+        mock_ai_check_result.py.return_value = False
+        mock_aimeta_probe = mocker.Mock()
+        mock_aimeta_probe.py.return_value = False
+        mock_bind_result = mocker.Mock()
+        mock_bind_result.py.return_value = bind_available
+        effects = [
+            mock_version_result, mock_sql_check_result, mock_ai_check_result, mock_aimeta_probe,
+            mock_bind_result,
+        ]
+        if bind_available:
+            mock_entitled_result = mocker.Mock()
+            mock_entitled_result.py.return_value = entitled_available
+            effects.append(mock_entitled_result)
+        return effects
+
+    def test_kdbx_connection_assert_identity_bind_missing(self, mock_config, mock_dependencies, mocker):
+        """`KDBX_DB_ASSERT_IDENTITY=true` against a target with no `kx.auth` module fails clean at
+        startup rather than at the first bind attempt (server.py's `bind_available` pre-flight)."""
+        mock_config.db.assert_identity = True
+        mock_config.db.data_gate = False
+        mock_client = mock_dependencies['pykx_connection'].return_value
+        mock_client.side_effect = self._identity_side_effects(mocker, bind_available=False)
+
+        with pytest.raises(SystemExit):
+            McpServer(mock_config)
+
+        mock_client.close.assert_called_once()
+
+    def test_kdbx_connection_assert_identity_bind_available(self, mock_config, mock_dependencies, mocker, caplog):
+        """`KDBX_DB_ASSERT_IDENTITY=true` against a target that has `.kx.auth.bind` proceeds."""
+        mock_config.db.assert_identity = True
+        mock_config.db.data_gate = False
+        mock_client = mock_dependencies['pykx_connection'].return_value
+        mock_client.side_effect = self._identity_side_effects(mocker, bind_available=True)
+
+        with caplog.at_level(logging.INFO):
+            McpServer(mock_config)
+
+        assert "identity assertion check: SUCCESS" in caplog.text
+        mock_client.close.assert_called_once()
+
+    def test_kdbx_connection_data_gate_entitled_missing(self, mock_config, mock_dependencies, mocker):
+        """`KDBX_DB_DATA_GATE=true` (which requires `assert_identity`) against a `kx.auth` build
+        that lacks `entitled` fails clean at startup — the untested branch server.py:150-163 guards.
+        Without this pre-flight, the data gate would fail per-query instead, mid-deployment."""
+        mock_config.db.assert_identity = True
+        mock_config.db.data_gate = True
+        mock_client = mock_dependencies['pykx_connection'].return_value
+        mock_client.side_effect = self._identity_side_effects(
+            mocker, bind_available=True, entitled_available=False
+        )
+
+        with pytest.raises(SystemExit):
+            McpServer(mock_config)
+
+        mock_client.close.assert_called_once()
+
+    def test_kdbx_connection_data_gate_entitled_available(self, mock_config, mock_dependencies, mocker, caplog):
+        """`KDBX_DB_DATA_GATE=true` against a `kx.auth` build that ships `entitled` proceeds."""
+        mock_config.db.assert_identity = True
+        mock_config.db.data_gate = True
+        mock_client = mock_dependencies['pykx_connection'].return_value
+        mock_client.side_effect = self._identity_side_effects(
+            mocker, bind_available=True, entitled_available=True
+        )
+
+        with caplog.at_level(logging.INFO):
+            McpServer(mock_config)
+
+        assert "data-entitlement gate check: SUCCESS" in caplog.text
+        mock_client.close.assert_called_once()
+
 
 def test_importing_the_bundle_registers_the_kdbx_rbac_authz_adapter():
     """Loading the kdb-x bundle must register the `kdbx_rbac` capability-check authz adapter.
 
-    The SQL tool's `@authorize` routes a `query`/`kdbx:sql` capability check to `decide(strategy=
+    The SQL tool's `@authorize` routes a `query`/`kdbx.sql` capability check to `decide(strategy=
     "kdbx_rbac")` when `KX_MCP_AUTHZ=kdbx_rbac`. Since the tool no longer imports `authz_kx_rbac`
     directly, `server.py` imports it for its self-registration side effect — importing this test's
     `kx_mcp_kdbx.server` is enough to make the adapter available. Regression guard for that import."""

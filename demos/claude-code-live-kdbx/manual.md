@@ -5,9 +5,9 @@ Claude Code → the jwks-protected container (`KDBX_DB_ASSERT_IDENTITY=true` +
 semantic RBAC sets enforced over one `.kx.auth` engine**:
 
 - **The capability check (PEP-1, container-side):** the SQL tool carries `@authorize(action="query",
-  resource="kdbx:sql")`; with `KX_MCP_AUTHZ=kdbx_rbac` the decorator calls
-  `.kx.auth.authorize[\`query;\`kdbx:sql]` before the query — *may this subject invoke the SQL tool at all?*
-- **The data gate (PEP-2, q-side):** `.s.e` wraps the query with `.kx.auth.authorize[\`read;\`trades]`
+  resource="kdbx.sql")`; with `KX_MCP_AUTHZ=kdbx_rbac` the decorator calls
+  `.kx.auth.authorize[\`query;\`kdbx.sql]` before the query — *may this subject invoke the SQL tool at all?*
+- **The data gate (PEP-2, q-side):** `.s.e` wraps the query with `.kx.auth.authorize[\`read;\`data.trades]`
   — *for this data, what is permitted?*
 
 The grants **diverge** so the two layers are visible: **alice** (`viewer`+`trader`) clears both → rows;
@@ -16,7 +16,7 @@ The grants **diverge** so the two layers are visible: **alice** (`viewer`+`trade
 regardless.
 
 > **NB — two denial shapes.** A capability-check deny raises `AuthorizationDenied` (a clean tool
-> error — *"not authorized: query on kdbx:sql"*); a data-gate deny returns the structured
+> error — *"not authorized: query on kdbx.sql"*); a data-gate deny returns the structured
 > `permission_denied` envelope. The capability check is the `@authorize` decorator over the
 > `kx_auth_core.authz` `kdbx_rbac` adapter; the data gate is the q-side gate.
 
@@ -129,9 +129,9 @@ claude mcp add --transport http kx-kdbx http://127.0.0.1:8000/mcp \
   --header "Authorization: Bearer $BOB"
 ```
 
-As **bob** the same `SELECT` returns `permission_denied` — *"…not permitted read on trades"* — even
+As **bob** the same `SELECT` returns `permission_denied` — *"…not permitted read on data.trades"* — even
 though bob passed the capability check. On the container/host terminals you can see **both** decisions:
-the PEP-1 `query`/`kdbx:sql` consult (allow) and the PEP-2 `read`/`trades` consult (deny).
+the PEP-1 `query`/`kdbx.sql` consult (allow) and the PEP-2 `read`/`data.trades` consult (deny).
 
 ## Teardown
 
@@ -146,13 +146,13 @@ The headline above shows bob denied at the *data* layer. To see the *capability*
 any data round-trip — narrow the capability grant in [`host.q`](host.q) to traders only:
 
 ```q
-.demo.capGrants:([] grp:enlist `trader; act:enlist `query; res:enlist `$"kdbx:sql");
+.demo.capGrants:([] grp:enlist `trader; act:enlist `query; res:enlist `kdbx.sql);
 .demo.grants:.demo.dataGrants,.demo.capGrants;  / rebuild the combined table the check reads
 ```
 
-Restart the host and re-run as **bob**: now `.kx.auth.authorize[\`query;\`kdbx:sql]` denies him at
+Restart the host and re-run as **bob**: now `.kx.auth.authorize[\`query;\`kdbx.sql]` denies him at
 PEP-1, the `@authorize` decorator raises `AuthorizationDenied` — *"not authorized: query on
-kdbx:sql"* — and the query never reaches the data gate. Two independent semantic RBAC sets, one
+kdbx.sql"* — and the query never reaches the data gate. Two independent semantic RBAC sets, one
 `.kx.auth` engine.
 
 ## Wrinkles
@@ -160,9 +160,9 @@ kdbx:sql"* — and the query never reaches the data gate. Two independent semant
 - **Both settings are required for the two-set demo.** `KDBX_DB_ASSERT_IDENTITY` binds the principal
   (so the q gate can see it); `KX_MCP_AUTHZ=kdbx_rbac` routes the SQL tool's `@authorize` capability
   check to the q engine. Both default off/unset — existing single-principal deployments are unchanged.
-- **Fixed `(action;resource)`.** The demo gates on a fixed `(\`read;\`trades)` (PEP-2) and
-  `(\`query;\`kdbx:sql)` (PEP-1) to keep the lesson on the two seams, not on SQL parsing. The PEP-1
-  vocabulary `query`/`kdbx:sql` is the documented convention the `@authorize` decorator and the q
+- **Fixed `(action;resource)`.** The demo gates on a fixed `(\`read;\`data.trades)` (PEP-2) and
+  `(\`query;\`kdbx.sql)` (PEP-1) to keep the lesson on the two seams, not on SQL parsing. The PEP-1
+  vocabulary `query`/`kdbx.sql` is the documented convention the `@authorize` decorator and the q
   capability grant set share.
 - **Groups source.** Tokens carry a top-level `groups` claim (`viewer`/`trader`); `kx.auth`'s default
   search finds it, so no `setClaims` override is needed. If your IdP puts groups elsewhere, set the

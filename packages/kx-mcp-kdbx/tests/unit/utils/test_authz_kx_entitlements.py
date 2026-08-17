@@ -26,9 +26,9 @@ def _req(tables: str, action: str = "read", subject: str = "alice") -> AuthzRequ
     )
 
 
-def _entitled_conn(entitled: list[str]) -> Mock:
-    """A conn whose `.kx.auth.entitled` call yields the given subset (as q would)."""
-    return Mock(return_value=Mock(py=Mock(return_value=list(entitled))))
+def _entitled_conn(entitled_resources: list[str]) -> Mock:
+    """A conn whose `.kx.auth.entitled` call yields the given resource subset (as q would)."""
+    return Mock(return_value=Mock(py=Mock(return_value=list(entitled_resources))))
 
 
 class TestDeriveTables:
@@ -57,14 +57,17 @@ class TestResourceRoundTrip:
         assert ent.tables_from_resource(req.resource) == ["accounts", "trades"]
 
     def test_foreign_resource_yields_nothing(self):
-        assert ent.tables_from_resource("kdbx:sql") == []
+        assert ent.tables_from_resource("kdbx.sql") == []
+
+    def test_physical_table_maps_to_canonical_q_resource(self):
+        assert ent.q_resource_for_table("trades") == "data.trades"
 
 
 class TestEntitledCheck:
     """entitled_check consults q `.kx.auth.entitled` with symbol-typed args, one round-trip."""
 
     def test_sends_symbols_and_returns_subset(self):
-        conn = _entitled_conn(["trades"])
+        conn = _entitled_conn(["data.trades"])
 
         result = ent.entitled_check(conn, "read", ["trades", "accounts"])
 
@@ -72,7 +75,15 @@ class TestEntitledCheck:
         args = conn.call_args.args
         assert args[0] == ".kx.auth.entitled"
         assert isinstance(args[1], kx.SymbolAtom) and args[1].py() == "read"
-        assert isinstance(args[2], kx.SymbolVector) and args[2].py() == ["trades", "accounts"]
+        assert isinstance(args[2], kx.SymbolVector)
+        assert args[2].py() == ["data.trades", "data.accounts"]
+
+    def test_ignores_unrequested_returned_resources(self):
+        conn = _entitled_conn(["data.trades", "data.secrets", "trades"])
+
+        result = ent.entitled_check(conn, "read", ["trades", "accounts"])
+
+        assert result == ["trades"]
 
 
 class TestKdbxEntitlementsAdapter:
@@ -82,7 +93,11 @@ class TestKdbxEntitlementsAdapter:
         assert "kdbx_entitlements" in authz_adapters()
 
     def test_all_entitled_allows(self, monkeypatch):
-        monkeypatch.setattr(ent, "_resolve_bound_conn", lambda: _entitled_conn(["accounts", "trades"]))
+        monkeypatch.setattr(
+            ent,
+            "_resolve_bound_conn",
+            lambda: _entitled_conn(["data.accounts", "data.trades"]),
+        )
 
         decision = decide(_req("accounts,trades"), strategy="kdbx_entitlements")
 
@@ -101,7 +116,7 @@ class TestKdbxEntitlementsAdapter:
 
     def test_partial_entitlement_scopes_down(self, monkeypatch):
         """THE scope-down: a strict subset → allow-with-obligations (entitled + denied lists)."""
-        monkeypatch.setattr(ent, "_resolve_bound_conn", lambda: _entitled_conn(["trades"]))
+        monkeypatch.setattr(ent, "_resolve_bound_conn", lambda: _entitled_conn(["data.trades"]))
 
         decision = decide(_req("accounts,trades"), strategy="kdbx_entitlements")
 
@@ -114,7 +129,7 @@ class TestKdbxEntitlementsAdapter:
     def test_by_principal(self, monkeypatch):
         """Same request, different bound principal (different q verdict) → different decision —
         the 'by principal' clause: the decision tracks whoever the handle is bound to."""
-        monkeypatch.setattr(ent, "_resolve_bound_conn", lambda: _entitled_conn(["trades"]))
+        monkeypatch.setattr(ent, "_resolve_bound_conn", lambda: _entitled_conn(["data.trades"]))
         alice = decide(_req("trades", subject="alice"), strategy="kdbx_entitlements")
         monkeypatch.setattr(ent, "_resolve_bound_conn", lambda: _entitled_conn([]))
         bob = decide(_req("trades", subject="bob"), strategy="kdbx_entitlements")
@@ -157,11 +172,11 @@ class TestDenialFromDecision:
 
     def test_hard_deny_envelope(self):
         d = AuthzDecision(allowed=False, adapter="kdbx_entitlements",
-                          reason="bob not permitted read on trades")
+                          reason="bob not permitted read on data.trades")
         env = denial_from_decision(d)
         assert env["status"] == "error"
         assert env["error_type"] == "permission_denied"
-        assert "bob not permitted read on trades" in env["message"]
+        assert "bob not permitted read on data.trades" in env["message"]
 
     def test_scope_down_envelope_carries_guidance(self):
         d = AuthzDecision(

@@ -8,7 +8,7 @@ The trusted caller connects with a service-account login and **asserts** the use
 binding a principal (a dict of the user's claims) to its connection. Permission functions then consult
 the bound principal to gate access. kdb+ does no token parsing or crypto: the assertion arrives on an
 authenticated service-account connection (ideally over TLS), and `bind` is additionally gated by the
-installed policy — the caller's login must hold an `` `assert `` grant on `` `identity `` (see Install).
+installed policy — the caller's login must hold an `` `assert `` grant on `` `kx.identity `` (see Install).
 
 ## Two identities
 
@@ -33,13 +33,13 @@ cp -r kx/auth ~/.kx/mod/kx/auth          # or: ln -sfn "$PWD/kx/auth" ~/.kx/mod/
 .kx.auth:use`kx.auth;                              / bind to a global so a remote `.kx.auth.bind` resolves
 .kx.auth.configure[(`svcuser;"service-account-pw")]; / the credentials the trusted caller connects with
 .kx.auth.setPolicy[{[p;a;r]                        / bind[] consults this same default-deny policy, so
-  (p[`sub]=`svcuser) and (a=`assert) and r=`identity}]; / grant the service account `assert on `identity
+  (p[`sub]=`svcuser) and (a=`assert) and r=`kx.identity}]; / grant the service account `assert on `kx.identity
 .kx.auth.activate[];                               / wire .z.pw / .z.po / .z.pc (composes with any priors)
 ```
 
 `use` alone is side-effect-free; `activate[]` opts into installing the handlers. The `setPolicy` grant
 is required: `bind` consults the same default-deny policy (the caller's login must hold `` `assert ``
-on `` `identity ``), so without it every assertion is refused. Full grant-table example:
+on `` `kx.identity ``), so without it every assertion is refused. Full grant-table example:
 `demos/claude-code-live-kdbx/host.q`.
 
 `configure` is a self-contained development/reference verifier. Because `activate[]` composes with
@@ -48,11 +48,19 @@ login through its existing `-U` password file or platform `.z.pw`. Use one q-sid
 Separately, the MCP process needs one connection-secret source (`KDBX_DB_PASSWORD` or, preferably for
 production, `KDBX_DB_PASSWORD_FILE`); it does not read q's password file.
 
+## Reserved resource root
+
+The `kx.*` resource root is reserved for KX module-owned control-plane resources. In particular,
+`kx.identity`, `kx.rbac`, and `kx.q` belong to the shared authorization vocabulary; host policies
+must not mint application or data resources beneath `kx.*`. Use `data.<table>` for table data and a
+product- or application-specific root for other resources. This keeps host-defined grants from
+colliding with current or future module contracts.
+
 ## Exports
 
 | Export | Signature | Description |
 |---|---|---|
-| `bind` | `bind[principal]` | After policy permits the caller's login to `assert` on `identity`, promote and bind the principal dict to the current connection handle (`.z.w`). |
+| `bind` | `bind[principal]` | After policy permits the caller's login to `assert` on `kx.identity`, promote and bind the principal dict to the current connection handle (`.z.w`). |
 | `current` | `current[]` | The principal bound to this handle, or `(::)` when unbound. |
 | `valid` | `valid[]` | `1b` iff a principal is bound and unexpired (`exp` arrives as unix seconds and is canonicalised to a q timestamp at bind; absent ⇒ never expires). |
 | `require` | `require[]` | Default-deny: signals `'denied` when no valid principal is bound, else returns it. |
@@ -74,16 +82,16 @@ as symbols (don't `` `$ `` them). `bind` canonicalises `exp` from a unix-seconds
 
 ## Usage — requiring identity and authorizing access
 
-Install a policy that grants the `trader` group `` `read `` on `` `trades ``. The compact first
-clause retains the trusted service account's required `` `assert `` on `` `identity `` grant from
+Install a policy that grants the `trader` group `` `read `` on `` `data.trades ``. The compact first
+clause retains the trusted service account's required `` `assert `` on `` `kx.identity `` grant from
 the Install example; omitting it makes subsequent `bind` calls fail:
 
 ```q
 allowed:{[p;a;r]
-  $[(p[`sub]=`svcuser) and (a=`assert) and r=`identity;
+  $[(p[`sub]=`svcuser) and (a=`assert) and r=`kx.identity;
     1b;
     $[`groups in key p;
-      (`trader in p`groups) and (a=`read) and r=`trades;
+      (`trader in p`groups) and (a=`read) and r=`data.trades;
       0b]] };
 
 .kx.auth.setPolicy[allowed];
@@ -104,11 +112,13 @@ installed policy, and returns the valid principal on success, so there is no nee
 
 ```q
 getTrades:{[s]
-  p:.kx.auth.authorize[`read;`trades];            / require identity + enforce the S/A/R grant
+  p:.kx.auth.authorize[`read;`data.trades];       / require identity + enforce the S/A/R grant
   / p remains available for audit or finer row-level scoping
   select from trades where sym=s };
 ```
 
-A principal in the `trader` group may read `trades`. A principal without that grant—and any
+A principal in the `trader` group may read `` `data.trades ``. The grant resource is deliberately
+distinct from the physical q table symbol `trades`; hosts use `data.<table>` for table data and keep
+the `kx.*` root for module-owned control-plane resources. A principal without that grant—and any
 unbound or expired connection—is refused with a clean `'denied` the caller can handle. Binding an
 end user does not give that user the service account's separate assertion privilege.

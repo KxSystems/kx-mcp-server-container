@@ -11,6 +11,28 @@ less-frequent cadence.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-17
+
+### Added
+- Added `--exit-on-mount-failure` (and `KX_MCP_EXIT_ON_MOUNT_FAILURE`) to the `kx-mcp` launcher, so
+  the strict mount posture is reachable without hand-written glue: a backend whose eager pre-flight
+  fails terminates the process instead of being disabled with a warning. Off by default, leaving the
+  existing forgiving behaviour unchanged — turn it on for a one-backend-per-container deployment that
+  wants the orchestrator to restart the process and surface the misconfiguration as a crash loop.
+  See [Mount-failure posture](docs/deployment.md#configuration-reference).
+
+### Changed
+- Renamed the q-facing authorization resources to the collision-safe shared vocabulary:
+  `assert:kx.identity`, `query:kdbx.sql`, `admin:kdbx.metadata`, and `read:data.<table>`. This is a breaking grant-name
+  migration: update host q policies together with this container version; old resource names are not
+  accepted as aliases. The KDB-X data-gate adapter continues to expose physical table names to tools
+  and obligations while translating the q policy consult to `data.<table>` resources.
+- Requesting bundles and mounting **none** of them now exits non-zero. Previously the container
+  started bare and kept serving with no backends behind it, so a total misconfiguration presented as
+  a healthy process offering zero tools. Graceful degradation is about surviving a *partial* failure,
+  not about staying alive with nothing to serve; a container that mounts at least one requested
+  backend still keeps serving as before.
+
 ## [0.3.0] - 2026-08-05
 
 ### Added
@@ -25,7 +47,7 @@ less-frequent cadence.
   `kdbx_get_table_metadata` tool (single table with a bounded live preview) and the administrative
   `kdbx_refresh_metadata` tool, which reloads recompiled annotations without restarting the
   container. `kdbx_refresh_metadata` is route-only when `KX_MCP_AUTHZ` is unset (the default); when
-  capability authz is configured, callers need the `admin` capability for `kdbx:metadata`.
+  capability authz is configured, callers need the `admin` capability for `kdbx.metadata`.
 - Added `KDBX_DB_AIMETA_CACHE_TTL` (default `300` seconds) to control how long aimeta metadata is
   cached, including a negative probe against an unannotated host. Set it to `0` to disable caching;
   use `kdbx_refresh_metadata` to pick up recompiled annotations sooner.

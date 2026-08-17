@@ -22,7 +22,7 @@ class TestRbacCheck:
         principal = {"sub": "alice"}
         conn = Mock(return_value=principal)
 
-        result = rbac_check(conn, "query", "kdbx:sql")
+        result = rbac_check(conn, "query", "kdbx.sql")
 
         assert result is principal
         # Called .kx.auth.authorize with two SymbolAtoms carrying the action + resource.
@@ -30,14 +30,14 @@ class TestRbacCheck:
         assert args[0] == ".kx.auth.authorize"
         assert isinstance(args[1], kx.SymbolAtom) and args[1].py() == "query"
         # The colon-namespaced MCP resource survives the symbol round-trip.
-        assert isinstance(args[2], kx.SymbolAtom) and args[2].py() == "kdbx:sql"
+        assert isinstance(args[2], kx.SymbolAtom) and args[2].py() == "kdbx.sql"
 
     def test_deny_propagates_q_denied_signal(self):
         """On deny, the q `'denied: ...` error propagates for the caller to map."""
-        conn = Mock(side_effect=Exception("denied: alice not permitted query on kdbx:sql"))
+        conn = Mock(side_effect=Exception("denied: alice not permitted query on kdbx.sql"))
 
         try:
-            rbac_check(conn, "query", "kdbx:sql")
+            rbac_check(conn, "query", "kdbx.sql")
             assert False, "expected the denial to propagate"
         except Exception as exc:
             assert is_denial(exc)
@@ -47,7 +47,7 @@ class TestIsDenial:
     """is_denial is the single source for the `.kx.auth` `denied:`-prefix convention."""
 
     def test_recognises_denied_prefix_case_insensitively(self):
-        assert is_denial(Exception("denied: bob not permitted read on trades"))
+        assert is_denial(Exception("denied: bob not permitted read on data.trades"))
         assert is_denial(Exception("DENIED: nope"))
         assert is_denial(Exception("  denied: leading space"))
 
@@ -56,7 +56,7 @@ class TestIsDenial:
         assert not is_denial(Exception("some error with .s.e in it"))
 
 
-def _req(action: str = "query", resource: str = "kdbx:sql") -> AuthzRequest:
+def _req(action: str = "query", resource: str = "kdbx.sql") -> AuthzRequest:
     return AuthzRequest(
         subject="alice", action=action, resource=resource, namespace="kdbx", claims={"sub": "alice"}
     )
@@ -87,11 +87,11 @@ class TestKdbxRbacAdapter:
         # The MCP-semantic (action;resource) reached the q policy call as symbols.
         args = conn.call_args.args
         assert args[0] == ".kx.auth.authorize"
-        assert args[1].py() == "query" and args[2].py() == "kdbx:sql"
+        assert args[1].py() == "query" and args[2].py() == "kdbx.sql"
 
     def test_q_denial_becomes_deny_with_reason(self, monkeypatch):
         """A `'denied: ...` q signal -> AuthzDecision(allowed=False) carrying the reason."""
-        conn = Mock(side_effect=Exception("denied: alice not permitted query on kdbx:sql"))
+        conn = Mock(side_effect=Exception("denied: alice not permitted query on kdbx.sql"))
         monkeypatch.setattr(authz_kx_rbac, "_resolve_bound_conn", lambda: conn)
 
         decision = decide(_req(), strategy="kdbx_rbac")

@@ -142,12 +142,25 @@ def test_static_denies_when_group_missing(as_principal, policy_file):
     assert decision.allowed is False
 
 
-def test_namespace_derived_from_resource_prefix(as_principal, policy_file):
-    """resource 'kdbx:sql' -> namespace 'kdbx'; the admin grant under kdbx: applies."""
+def test_namespace_derived_from_dotted_resource_prefix(as_principal, policy_file):
+    """resource 'kdbx.sql' -> namespace 'kdbx'; the admin grant under kdbx: applies."""
     configure_authz(AuthzSettings(mode="static", policy_file=policy_file))
     as_principal({"sub": "root", "groups": ["admin"]})
 
-    @authorize(action="write", resource="kdbx:sql")
+    @authorize(action="write", resource="kdbx.sql")
+    async def tool():
+        return "ran"
+
+    result, exc, _ = invoke(tool)
+    assert result == "ran" and exc is None
+
+
+def test_namespace_derived_from_colon_resource_prefix(as_principal, policy_file):
+    """Legacy non-q backend resources retain the namespace:thing convention."""
+    configure_authz(AuthzSettings(mode="static", policy_file=policy_file))
+    as_principal({"sub": "root", "groups": ["admin"]})
+
+    @authorize(action="write", resource="example:thing")
     async def tool():
         return "ran"
 
@@ -160,7 +173,7 @@ def test_decorated_but_unlisted_action_denies(as_principal, policy_file):
     configure_authz(AuthzSettings(mode="static", policy_file=policy_file))
     as_principal({"sub": "root", "groups": ["admin"]})
 
-    @authorize(action="query", resource="kdbx:sql")
+    @authorize(action="query", resource="kdbx.sql")
     async def tool():
         return "ran"
 
@@ -174,7 +187,7 @@ def test_groups_claim_path_is_configurable(as_principal, policy_file):
     configure_authz(AuthzSettings(mode="static", policy_file=policy_file, groups_claim="roles"))
     as_principal({"sub": "alice", "roles": ["admin"], "groups": []})
 
-    @authorize(action="write", resource="kdbx:sql")
+    @authorize(action="write", resource="kdbx.sql")
     async def tool():
         return "ran"
 
@@ -249,7 +262,7 @@ def test_static_empty_file_is_valid_and_denies_everything(tmp_path, as_principal
     configure_authz(AuthzSettings(mode="static", policy_file=str(p)))
     as_principal({"sub": "root", "groups": ["admin"]})
 
-    @authorize(action="write", resource="kdbx:sql")
+    @authorize(action="write", resource="kdbx.sql")
     async def tool():
         return "ran"
 

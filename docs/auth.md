@@ -187,7 +187,7 @@ process loads it, configures which claim paths promote to `groups`/`tenant`
 On q, `.kx.auth.configure[(user;password)]` is the self-contained development/reference verifier;
 an existing `-U` password file or platform-defined `.z.pw` is the production-oriented alternative.
 Do not configure a redundant second q verifier. Whichever verifier authenticates the connection,
-the installed policy must separately grant that login `` `assert `` on `` `identity ``; a
+the installed policy must separately grant that login `` `assert `` on `` `kx.identity ``; a
 data-only replacement policy makes `bind` fail.
 q-side setup detail: [`packages/kx-mcp-kdbx/README.md`](../packages/kx-mcp-kdbx/README.md)
 § Identity assertion.
@@ -206,7 +206,7 @@ Authorization has two layers, distinguished by *where* the check runs and *what*
   downstream extension's native policy engine), authoritative for what data a caller sees, able to
   scope-down (filter) rather than just deny. For kdb-x the container-side explicit consult of this
   gate is opt-in via `KDBX_DB_DATA_GATE=true` (requires `KDBX_DB_ASSERT_IDENTITY=true`): before a
-  query runs, the tool asks q `.kx.auth.entitled[action;tables]` on the bound per-principal handle
+  query runs, the tool asks q `.kx.auth.entitled[action;resources]` on the bound per-principal handle
   and allows, returns a structured `permission_denied`, or scopes down to the entitled subset.
   Detail: [`packages/kx-mcp-kdbx/README.md`](../packages/kx-mcp-kdbx/README.md) § Configuration.
 
@@ -241,13 +241,14 @@ acme:
 
 (`query` is declared by the shipped SQL tool; `admin` is declared by metadata refresh. The static
 adapter keys namespace + action, while each decorator still records its full resource convention:
-`kdbx:sql` or `kdbx:metadata`. `acme:publish` illustrates a downstream extension.)
+`kdbx.sql` or `kdbx.metadata`. Dotted q-facing resources and colon-style resources both derive the
+namespace before their first separator; `acme:publish` illustrates a downstream extension.)
 
 With `KX_MCP_AUTHZ=kdbx_rbac`, grant the same action/resource convention in the host's q capability
 table. For a `grp`/`act`/`res` grant table like the live demo's, an administrator grant is:
 
 ```q
-capGrants,:enlist (`admin;`admin;`$"kdbx:metadata");
+capGrants,:enlist (`admin;`admin;`kdbx.metadata);
 ```
 
 The first `admin` is the asserted group, the second is the action. Omitting that row leaves refresh
