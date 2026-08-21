@@ -8,12 +8,13 @@ the authorization seam, and per-dispatch audit.
 Install it when you are **assembling an MCP server** from KX backend bundles:
 
 ```bash
-uv add kx-mcp-core kx-mcp-kdbx        # from the internal KX Nexus index
+uv add kx-mcp-core kx-mcp-kdbx        # from PyPI
 ```
 
-> **KX-internal today.** The wheels are published to the internal KX Nexus only — not to PyPI.
-> External readers: build the wheels from source instead — see the
-> [deployment guide](../../docs/deployment.md#quickstart--three-ways-to-run-it).
+> **On PyPI as a pre-release.** `0.5.0b1` is published as a PEP 440 pre-release, so an unpinned
+> install resolves it only while no final release exists — pin `kx-mcp-core==0.5.0b1` if you need
+> that exact version. Final releases (`0.4.0` and earlier) are on the internal KX Nexus; see the
+> [deployment guide](../../docs/deployment.md#quickstart--three-ways-to-run-it) for either index.
 
 ## What's in the box
 
@@ -37,14 +38,10 @@ try_mount_bundle(app, load_build_server("kx_mcp_kdbx"), namespace="kdbx")
 app.run(transport="streamable-http", host="127.0.0.1", port=8000)
 ```
 
-Or no glue at all (same KX-internal caveat — needs read-only Nexus credentials):
+Or no glue at all:
 
 ```bash
-export UV_INDEX_KXI_NEXUS_USERNAME=<nexus-ro-user>
-export UV_INDEX_KXI_NEXUS_PASSWORD=<nexus-ro-password>
-
-uvx --index kxi-nexus=https://nexus.kxi-dev.kx.com/repository/kxi/simple \
-    --from kx-mcp-core --with kx-mcp-kdbx kx-mcp --bundles kdbx
+uvx --from kx-mcp-core --with kx-mcp-kdbx kx-mcp --bundles kdbx
 ```
 
 ## Documentation

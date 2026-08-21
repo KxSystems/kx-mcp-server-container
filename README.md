@@ -19,7 +19,7 @@ collisions.
 | You want to… | Go to |
 | --- | --- |
 | **Connect** to a kx-mcp server someone already runs | [MCP client configuration](#mcp-client-configuration) — point your client at the URL; with auth on, the server advertises its IdP and the client logs you in |
-| **Run it yourself** | [Quickstart](#quickstart) — `uv run` from a checkout (the portable path), or one `uvx` command from the wheels (KX-internal); then the [deployment guide](docs/deployment.md) for a production setup |
+| **Run it yourself** | [Quickstart](#quickstart) — `uv run` from a checkout (the portable path), or one `uvx` command from the published wheels; then the [deployment guide](docs/deployment.md) for a production setup |
 | **See it in action** | The live Claude Code demos — the whole auth flow end-to-end against a real backend: [`claude-code-live-kdbx`](demos/claude-code-live-kdbx/) (kdb-x, two RBAC sets), [`claude-code-live-kdbai`](demos/claude-code-live-kdbai/) (KDB.AI, RFC 9728 discovery + DCR), [`claude-code-live-kdbai-entra`](demos/claude-code-live-kdbai-entra/) (via Entra ID) |
 | **Migrate** from the standalone kdb-x / KDB.AI MCP server | [Coming from the standalone servers](#coming-from-the-standalone-kdb-x-or-kdbai-server) — same tools, now one launch command, and you can run both backends in one server |
 | **Assemble your own server** from the packages | [`demos/extending/`](demos/extending/) — the runnable downstream reference (builds the wheels from source) |
@@ -113,24 +113,22 @@ must have the `admin` capability for `kdbx.metadata`. See the
 
 ### Run from the published wheels (no checkout)
 
-> **KX-internal.** This path pulls from the internal Nexus and needs KX credentials — external users,
-> run from a checkout (above).
-
-The same server, straight from the internal Nexus via [uvx](https://docs.astral.sh/uv/guides/tools/)
-— nothing to clone:
+The same server via [uvx](https://docs.astral.sh/uv/guides/tools/), straight from PyPI — nothing to
+clone, no credentials:
 
 ```bash
-export UV_INDEX_KXI_NEXUS_USERNAME=<nexus-ro-user>
-export UV_INDEX_KXI_NEXUS_PASSWORD=<nexus-ro-password>
-
-uvx --index kxi-nexus=https://nexus.kxi-dev.kx.com/repository/kxi/simple \
-    --from kx-mcp-core --with kx-mcp-kdbx \
-    kx-mcp --bundles kdbx
+uvx --from kx-mcp-core --with kx-mcp-kdbx kx-mcp --bundles kdbx
 ```
 
 `--from kx-mcp-core` names the package that owns the `kx-mcp` command; each `--with` adds a backend
 bundle wheel matching the `--bundles` list. The kdb-x licence resolves from a co-located kdb-x
-install exactly as above. Details (credentials, pinning, prerequisites):
+install exactly as above.
+
+> **PyPI currently holds `0.5.0b1`, a pre-release.** The unpinned command works because it is the only
+> version there; pin `==0.5.0b1` to stay on it once a final release exists. Final releases (`0.4.0` and
+> earlier) are on the internal KX Nexus.
+
+Both indexes, pinning, and prerequisites:
 [deployment guide § quickstart](docs/deployment.md#quickstart--three-ways-to-run-it).
 
 ## How it works
@@ -165,7 +163,7 @@ examples/host.q         # sample KDB-X host on :5010 for local testing
 ```
 
 This project doesn't just assemble a server — it **produces modules**. All five packages are published as
-versioned wheels to the internal Nexus (KX-internal today), so a downstream project can `uv`/`pip`-install just the pieces
+versioned wheels — to PyPI, and to the internal KX Nexus — so a downstream project can `uv`/`pip`-install just the pieces
 it needs (the container + auth core, plus whichever backend bundles) and assemble its own server in a
 few lines, rather than working from this checkout. See [`demos/extending`](demos/extending) for a
 worked external-consumer build.
@@ -208,7 +206,7 @@ posture, or take the default `streamable-http`. See the [Quickstart](#quickstart
 - **One server, both backends.** `uv run kx-mcp --bundles kdbx,kdbai` serves them from a single
   process; their tools appear side by side as `kdbx_*` and `kdbai_*`. No more one process per server.
 - **Deploy without a checkout.** A single `uvx` command launches straight from the published wheels
-  (KX-internal) — see [Run from the published wheels](#run-from-the-published-wheels-no-checkout).
+  — see [Run from the published wheels](#run-from-the-published-wheels-no-checkout).
 - **Single-user stays zero-config.** With `KX_MCP_AUTH` unset (the default), the single-principal
   STDIO posture needs no auth setup — same as the standalone servers had. Inbound auth,
   authorization, and outbound identity propagation are there when you want them, entirely opt-in

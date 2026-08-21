@@ -7,6 +7,8 @@ cache + expiry buffer + invalidate), per-config isolation, and `build_conn_optio
 bundle's test_kxi_ie_auth.py, adapted to the bundle's synchronous connection path.
 """
 
+import os
+
 import pytest
 from kx_auth_core import OutboundCredential
 
@@ -188,6 +190,82 @@ def test_rest_passthrough_uses_inbound_bearer_in_oauth_file(mocker):
     import yaml
     written = yaml.safe_load(open(sess.call_args.kwargs["oauth"]["config_file"]))
     assert written["oauth"]["access_token"] == "INBOUND"
+    kdbai.cleanup_kdbai_client()
+
+
+def test_rest_passthrough_two_principals_get_distinct_oauth_files(mocker):
+    """REST + passthrough: two principals each get their OWN oauth file — alice's bearer never
+    ends up in bob's file. The qipc equivalent (`test_passthrough_caches_per_principal`) proves
+    session isolation via the options dict; REST's isolation is file-based, so it needs its own
+    proof at that boundary."""
+    kdbai.cleanup_kdbai_client()
+    sess = mocker.patch("kdbai_client.Session", side_effect=lambda *a, **k: mocker.Mock())
+    cfg = KDBAIConfig(mode="rest", outbound_strategy="passthrough")
+    kdbai._open_session(cfg, bearer="ALICE-TOKEN")
+    kdbai._open_session(cfg, bearer="BOB-TOKEN")
+
+    import yaml
+    alice_path = sess.call_args_list[0].kwargs["oauth"]["config_file"]
+    bob_path = sess.call_args_list[1].kwargs["oauth"]["config_file"]
+    assert alice_path != bob_path
+    alice_written = yaml.safe_load(open(alice_path))
+    bob_written = yaml.safe_load(open(bob_path))
+    assert alice_written["oauth"]["access_token"] == "ALICE-TOKEN"
+    assert bob_written["oauth"]["access_token"] == "BOB-TOKEN"
+    kdbai.cleanup_kdbai_client()
+
+
+def test_external_token_oauth_file_is_0600(mocker):
+    """The temp oauth file carries a real bearer — must not be group/world-readable."""
+    import stat
+    kdbai.cleanup_kdbai_client()
+    mocker.patch("kdbai_client.Session", side_effect=lambda *a, **k: mocker.Mock())
+    cfg = KDBAIConfig(mode="rest", outbound_strategy="passthrough")
+    kdbai._open_session(cfg, bearer="SECRET-TOKEN")
+    path = kdbai._oauth_files[-1]
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode == 0o600
+    kdbai.cleanup_kdbai_client()
+
+
+def test_oauth_files_tracked_and_fully_drained_on_cleanup(mocker):
+    """`_oauth_files` grows one entry per REST-oauth write and `cleanup_kdbai_client()` unlinks
+    every one — no leftover temp files, no leftover tracking entries, across multiple principals."""
+    kdbai.cleanup_kdbai_client()
+    mocker.patch("kdbai_client.Session", side_effect=lambda *a, **k: mocker.Mock())
+    cfg = KDBAIConfig(mode="rest", outbound_strategy="passthrough")
+
+    assert kdbai._oauth_files == []
+    kdbai._open_session(cfg, bearer="TOKEN-1")
+    kdbai._open_session(cfg, bearer="TOKEN-2")
+    kdbai._open_session(cfg, bearer="TOKEN-3")
+    assert len(kdbai._oauth_files) == 3
+    written_paths = list(kdbai._oauth_files)
+    assert all(os.path.exists(p) for p in written_paths)
+
+    kdbai.cleanup_kdbai_client()
+
+    assert kdbai._oauth_files == []
+    assert not any(os.path.exists(p) for p in written_paths)
+
+
+def test_rest_passthrough_without_bearer_is_reachability_only(mocker):
+    """REST + passthrough with NO inbound bearer (e.g. the startup pre-flight, no request context)
+    falls through to an anonymous reachability check — no oauth file written at all. The qipc
+    equivalent is `test_conn_options_passthrough_without_bearer_is_anonymous`; REST's no-bearer path
+    is a distinct code branch in `_open_session` (short-circuits before `_write_external_token_oauth`
+    is ever called) and had no coverage of its own."""
+    kdbai.cleanup_kdbai_client()
+    sess = mocker.patch("kdbai_client.Session", side_effect=lambda *a, **k: mocker.Mock())
+    cfg = KDBAIConfig(mode="rest", outbound_strategy="passthrough")
+
+    kdbai._open_session(cfg, bearer=None)
+
+    kwargs = sess.call_args.kwargs
+    assert kwargs["mode"] == "rest"
+    assert kwargs["options"] == {}
+    assert "oauth" not in kwargs
+    assert kdbai._oauth_files == []
     kdbai.cleanup_kdbai_client()
 
 

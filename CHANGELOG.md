@@ -11,6 +11,24 @@ less-frequent cadence.
 
 ## [Unreleased]
 
+## [0.5.0b1] - 2026-08-21
+
+First public PyPI release, as a PEP 440 pre-release. No functional change from `0.4.0` — the point is
+that the packages become installable without KX credentials.
+
+### Added
+- The container and backend packages (`kx-mcp-core`, `kx-mcp-kdbx`, `kx-mcp-kdbai`, `kx-auth-core`)
+  are now published to **PyPI** as well as the internal KX Nexus, so
+  `uvx --from kx-mcp-core --with kx-mcp-kdbx kx-mcp --bundles kdbx` runs with no index or credential
+  configuration. Because `0.5.0b1` is a pre-release, an unpinned install resolves it only while no
+  final release exists on PyPI — pin `==0.5.0b1` to stay on this version. Final releases (`0.4.0` and
+  earlier) remain on the internal Nexus.
+
+### Changed
+- Reworked "run from the published wheels" (README, deployment guide, `kx-mcp-core` README) to lead
+  with the credential-free PyPI path, keeping internal Nexus as the alternative that carries final
+  releases, plus a troubleshooting entry for pre-release resolution failures.
+
 ## [0.4.0] - 2026-08-17
 
 ### Added

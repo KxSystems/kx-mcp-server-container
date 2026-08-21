@@ -30,14 +30,33 @@ PyKX license at import — with a kdb-x install on the machine (its `q` on `PATH
 automatically; see the prerequisites table below for the standalone case. The KDB.AI bundle needs no
 license.
 
-### 2. From the published wheels (no checkout) — `uvx` &nbsp;·&nbsp; _KX-internal today_
+### 2. From the published wheels (no checkout) — `uvx`
 
-> **Internal use only, for now.** The packages are published to the **internal KX Nexus** (requires
-> KX VPN + read-only Nexus credentials); they are **not** on PyPI or any public index — external
-> wheel distribution is not yet committed. An external reader should use path 1 (checkout) or path 3
-> (build the wheels from source).
+> **PyPI carries a pre-release; the internal KX Nexus carries the finals.** `0.5.0b1` is on PyPI as a
+> PEP 440 pre-release — installable by anyone, no credentials — while the internal Nexus holds the
+> final releases (`0.4.0` and earlier, KX VPN + read-only credentials). Choose the index that matches
+> what you need; the commands are otherwise identical.
 
-With Nexus access, `uvx` runs the container in an ephemeral environment from one command:
+`uvx` runs the container in an ephemeral environment from one command, straight from PyPI:
+
+```bash
+uvx --from kx-mcp-core --with kx-mcp-kdbx kx-mcp --bundles kdbx
+```
+
+`--from kx-mcp-core` names the package that owns the `kx-mcp` command (uvx can't infer it from the
+executable name); each `--with` adds a backend bundle wheel (`kx-mcp-kdbx`/`-kdbai`, repeat
+for several) matching the `--bundles` list.
+
+That unpinned command resolves `0.5.0b1` **because it is currently the only version on PyPI** — a
+resolver falls back to a pre-release when no final release is available. The same command will switch
+to the first final release once one is published, so pin explicitly when you depend on a version (all
+packages version in lockstep):
+
+```bash
+uvx --from kx-mcp-core==0.5.0b1 --with kx-mcp-kdbx==0.5.0b1 kx-mcp --bundles kdbx
+```
+
+**From the internal KX Nexus instead** — where the final releases live:
 
 ```bash
 export UV_INDEX_KXI_NEXUS_USERNAME=<nexus-ro-user>
@@ -47,11 +66,6 @@ uvx --index kxi-nexus=https://nexus.kxi-dev.kx.com/repository/kxi/simple \
     --from kx-mcp-core --with kx-mcp-kdbx \
     kx-mcp --bundles kdbx
 ```
-
-`--from kx-mcp-core` names the package that owns the `kx-mcp` command (uvx can't infer it from the
-executable name); each `--with` adds a backend bundle wheel (`kx-mcp-kdbx`/`-kdbai`, repeat
-for several) matching the `--bundles` list. Pin per release tag once you depend on a version:
-`--from kx-mcp-core==<X.Y.Z> --with kx-mcp-kdbx==<X.Y.Z>` (all packages version in lockstep).
 
 ### 3. Assemble your own server (downstream repo)
 
@@ -176,4 +190,5 @@ Auth variables (`KX_MCP_AUTH*`, `KX_MCP_AUTHZ*`, outbound strategies): the
 | qIPC connect *times out* on macOS at `:5000` | AirPlay owns `:5000` on macOS and swallows connections — this is why the kdb-x default is `:5010`. Don't deploy a backend on `:5000` on a Mac. |
 | `401` on every authed call / client can't log in | Work the inbound checklist in the [auth guide](auth.md#troubleshooting) — issuer/audience mismatch and a missing/wrong `KX_MCP_AUTH_RESOURCE_URL` cover most cases. |
 | `uvx` fails resolving `kx-mcp-core` (401) | Wrong/missing Nexus credentials — set `UV_INDEX_KXI_NEXUS_{USERNAME,PASSWORD}` (read-only pair) or a `.netrc` entry. |
+| `uvx`/`uv` reports no solution for `kx-mcp-core`, hinting a pre-release is available | PyPI currently holds only the `0.5.0b1` pre-release and pre-releases are disabled in that context — pass `--prerelease=allow` or pin the exact version (`kx-mcp-core==0.5.0b1`). |
 | Audit lines don't appear | You're embedding `make_parent` in custom glue without calling `configure_logging()` — the launcher does this for you; custom entry points must too. |
