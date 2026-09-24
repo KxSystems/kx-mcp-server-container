@@ -1,4 +1,4 @@
-"""q-level regression for kx.auth's per-handle principal replacement semantics (KXI-72739).
+"""q-level regression for kx.auth's per-handle principal replacement semantics.
 
 Runs ``kx_auth_rebind.q`` in a real ``q`` process and asserts that ``bind[]`` replaces a handle's
 principal **wholesale**. The module used to store principals as the values of a dict, and a dict whose

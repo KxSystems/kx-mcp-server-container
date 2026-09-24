@@ -44,7 +44,12 @@ async def my_tool_impl(param1: str, param2: int, param3: Optional[str] = None,
 
 # Pick a descriptive, BARE tool name — the container supplies the `kdbai` qualifier at
 # mount(namespace="kdbai"). Discovery picks this up automatically; no registration function needed.
-@tool
+# `annotations` are a strong convention, not optional polish: they are behavioural hints a host
+# reads BEFORE invoking, and unset means the host assumes the worst and prompts for what may be a
+# plain read. readOnlyHint for a read, + idempotentHint if retrying is safe, destructiveHint
+# INSTEAD of readOnlyHint if your tool can lose or overwrite data.
+# See docs/extending.md § Tool annotations.
+@tool(annotations={"readOnlyHint": True})
 async def my_tool(param1: str, param2: int, param3: Optional[str] = None,
                   ctx: Context = None) -> Dict[str, Any]:
     """
@@ -62,3 +67,10 @@ async def my_tool(param1: str, param2: int, param3: Optional[str] = None,
         Dict[str, Any]: Description of return value structure
     """
     return await my_tool_impl(param1, param2, param3, config=config_from_ctx(ctx))
+
+# Instrumenting the inside of a tool? The container already counts, times and spans every dispatch at
+# the boundary, so add to it only for what the boundary cannot see — and instrument the *_impl above,
+# not this wrapper. `from kx_mcp_core import span` for a child span,
+# `from kx_mcp_core.observability import Counter, metric` for a collector of your own; both are inert
+# when observability is off, and neither needs a dependency beyond kx-mcp-core.
+# See docs/extending.md § Observability for bundle authors.

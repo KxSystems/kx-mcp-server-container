@@ -24,7 +24,7 @@ async def test_refresh_metadata_authorizes_dotted_q_resource(mocker):
 
     # The implementation may return its clean error envelope after authorization; this regression
     # is deliberately about the request sent to the adapter, not metadata connectivity.
-    await kdbx_refresh_metadata_impl()
+    kdbx_refresh_metadata_impl()
 
     request = captured["request"]
     assert captured["strategy"] == "capture"

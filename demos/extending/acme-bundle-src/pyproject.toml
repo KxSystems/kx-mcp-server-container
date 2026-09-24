@@ -12,7 +12,10 @@ description = "Acme — a minimal example backend bundle for the consumer-build 
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "fastmcp>=3,<4",
-    "kx-mcp-core",        # for current_principal() — proving the inbound principal crosses the mount boundary
+    # current_principal() (the inbound principal crossing the mount boundary), and the whole
+    # observability surface this bundle uses — `span` + `metric` + the collector classes — so
+    # neither prometheus-client nor opentelemetry appears here.
+    "kx-mcp-core",
     "pydantic-settings",  # for the ACME_DB_* config fragment (settings.py)
 ]
 

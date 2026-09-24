@@ -9,7 +9,10 @@ description = "Example downstream consumer: an Acme-only MCP server assembled fr
 requires-python = ">=3.10,<3.14"
 dependencies = [
     # Resolved from the local wheel index below (built from the public repo source).
-    "kx-mcp-core",   # the container assembly seam (make_parent / try_mount_bundle) + the kx-mcp launcher
+    # [tracing] pulls the OpenTelemetry SDK + OTLP exporter kx-mcp-core's tracing seam needs — an
+    # optional extra, off by default, so server.py's KX_MCP_TRACING=otlp actually has something to
+    # export with. Drop it if you never turn KX_MCP_TRACING on; KX_MCP_METRICS needs no extra.
+    "kx-mcp-core[tracing]",   # the container assembly seam (make_parent / try_mount_bundle) + the kx-mcp launcher
     "kx-mcp-acme",   # the backend bundle — here overridden to a local source project (see [tool.uv.sources])
     # kx-auth-core arrives transitively (both kx-mcp-core and kx-mcp-acme reach it) — also from the local index.
     #

@@ -2,10 +2,12 @@ import logging
 from typing import Optional, Dict, Any
 from fastmcp import Context
 from fastmcp.tools import tool
+from kx_mcp_core import tool_result
 from kx_mcp_kdbx.settings import KDBConfig
 from kx_mcp_kdbx.utils.kdbx import get_kdb_connection, config_from_ctx
 from kx_mcp_kdbx.utils.denial import denial_response
 from kx_mcp_kdbx.utils.embeddings import get_provider
+from kx_mcp_kdbx.utils.observe import q
 from kx_mcp_kdbx.utils.format_utils import normalize_search_result
 from kx_mcp_kdbx.utils.embeddings_helpers import get_embedding_config
 
@@ -47,7 +49,7 @@ async def kdbx_similarity_search_impl(table_name: str,
 
         conn = get_kdb_connection(config)
 
-        result = conn('''{[args]
+        result = q(conn, "search", r'''{[args]
                             c:args`vcol;
                             $[(args`table) in .Q.pt;
                                 [
@@ -129,7 +131,7 @@ async def kdbx_hybrid_search_impl(table_name: str,
 
         conn = get_kdb_connection(config)
 
-        result = conn('''{[args]
+        result = q(conn, "hybrid_search", r'''{[args]
                             c:args`vcol;
                             $[(args`table) in .Q.pt;
                                 [
@@ -189,7 +191,7 @@ async def kdbx_hybrid_search_impl(table_name: str,
 # Standalone @tool decorators (FastMCP 3.x native discovery): each attaches __fastmcp__ metadata
 # and returns the function unchanged. Both carry the AI-libs tag so McpServer can hide them with
 # mcp.disable(tags={AI_LIBS_TAG}) when the per-instance pre-flight reports AI libs unavailable.
-@tool(tags={AI_LIBS_TAG})
+@tool(tags={AI_LIBS_TAG}, annotations={"readOnlyHint": True})
 async def similarity_search(table_name: str,
                             query: str,
                             n: Optional[int] = None,
@@ -211,10 +213,10 @@ async def similarity_search(table_name: str,
         n,
         config=config_from_ctx(ctx),
     )
-    return results
+    return tool_result(results)
 
 
-@tool(tags={AI_LIBS_TAG})
+@tool(tags={AI_LIBS_TAG}, annotations={"readOnlyHint": True})
 async def hybrid_search(table_name: str,
                         query: str,
                         n: Optional[int] = None,
@@ -236,4 +238,4 @@ async def hybrid_search(table_name: str,
         n,
         config=config_from_ctx(ctx),
     )
-    return results
+    return tool_result(results)

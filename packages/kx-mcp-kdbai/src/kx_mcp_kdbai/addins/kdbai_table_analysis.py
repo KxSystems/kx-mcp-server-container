@@ -5,7 +5,7 @@ from fastmcp.prompts import prompt
 
 logger = logging.getLogger(__name__)
 
-async def kdbai_table_analysis_prompt_impl(
+def kdbai_table_analysis_prompt_impl(
     table_name: str,
     analysis_type: str = "overview",
     sample_size: int = 10
@@ -110,4 +110,4 @@ async def table_analysis(
     Conduct detailed analysis of a specific table.
     Analysis_type Options: overview, content, quality, search.
     """
-    return await kdbai_table_analysis_prompt_impl(table_name, analysis_type, sample_size)
+    return kdbai_table_analysis_prompt_impl(table_name, analysis_type, sample_size)

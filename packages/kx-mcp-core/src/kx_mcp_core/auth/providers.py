@@ -27,6 +27,8 @@ from fastmcp.server.auth.providers.jwt import JWTVerifier
 from pydantic import AnyHttpUrl
 from kx_auth_core import AuthSettings, resolve_public_key
 
+from .audit import audit_authentication_denials
+
 logger = logging.getLogger(__name__)
 
 # A builder turns resolved settings into a provider (or None for "no inbound auth").
@@ -70,6 +72,9 @@ def build_auth_provider(settings: Optional[AuthSettings] = None) -> Optional[Aut
             settings.issuer,
             settings.audience,
         )
+        # Every rejected bearer becomes an audit line — the one access decision the dispatch
+        # middleware can never see, because a 401 ends the request before dispatch.
+        audit_authentication_denials(provider, settings)
     return provider
 
 
@@ -125,6 +130,73 @@ def _build_jwks(settings: AuthSettings) -> AuthProvider:
         token_verifier=verifier,
         authorization_servers=[AnyHttpUrl(settings.issuer)],
         base_url=settings.resource_url,
+    )
+
+
+def _build_oidc_proxy(settings: AuthSettings) -> AuthProvider:
+    """Any OIDC issuer via FastMCP's ``OIDCProxy`` — the provider-agnostic OAuth-Proxy front door.
+
+    Use this (not ``jwks``) when the container must **log a client in** against an issuer whose
+    Dynamic Client Registration is closed: ``jwks`` advertises the issuer and expects the client to
+    register there itself, which a locked-down Keycloak/Auth0/Okta realm refuses. ``OIDCProxy``
+    presents a DCR facade to the client and brokers with the issuer through **one pre-registered
+    app**, reading the upstream endpoints from its discovery document. ``entra`` is this mode pinned
+    to Microsoft. Validation underneath is the same ``JWTVerifier``, so everything downstream of
+    ``current_principal`` is unchanged; when a client already *holds* a token, prefer ``jwks``.
+
+    Two deployment consequences: discovery is fetched in the constructor (an unreachable issuer is
+    a startup failure, not a request-time one), and the proxy keeps durable state — an encrypted
+    on-disk store keyed off ``client_secret``, so restart- and worker-safe unconfigured. Detail:
+    ``docs/auth.md``.
+    """
+    from fastmcp.server.auth.oidc_proxy import OIDCProxy
+
+    config_url = settings.config_url
+    if not config_url and settings.issuer:
+        config_url = f"{settings.issuer.rstrip('/')}/.well-known/openid-configuration"
+
+    missing = [
+        name
+        for name, value in (
+            ("KX_MCP_AUTH_ISSUER or KX_MCP_AUTH_CONFIG_URL (the OIDC discovery document)", config_url),
+            ("KX_MCP_AUTH_CLIENT_ID (the pre-registered app)", settings.client_id),
+            ("KX_MCP_AUTH_RESOURCE_URL (the container's public base_url)", settings.resource_url),
+        )
+        if not value
+    ]
+    if missing:
+        raise ValueError(f"KX_MCP_AUTH=oidc_proxy requires: {', '.join(missing)}")
+    if not settings.client_secret and not settings.jwt_signing_key:
+        raise ValueError(
+            "KX_MCP_AUTH=oidc_proxy requires KX_MCP_AUTH_CLIENT_SECRET, or "
+            "KX_MCP_AUTH_JWT_SIGNING_KEY for a public/PKCE client with no secret to derive from"
+        )
+    if not settings.audience:
+        logger.warning(
+            "KX_MCP_AUTH=oidc_proxy without KX_MCP_AUTH_AUDIENCE — the token 'aud' claim will NOT "
+            "be validated. Set it (and a matching audience mapper at the issuer) to restrict tokens "
+            "to this container."
+        )
+
+    logger.info(
+        "inbound auth via OIDC proxy: config_url=%s client_id=%s base_url=%s scopes=%s",
+        config_url,
+        settings.client_id,
+        settings.resource_url,
+        settings.required_scopes,
+    )
+    # The `missing` check above guarantees these are set; assert narrows str | None -> str.
+    assert config_url and settings.client_id and settings.resource_url
+    return OIDCProxy(
+        config_url=config_url,
+        strict=settings.oidc_strict,
+        client_id=settings.client_id,
+        client_secret=settings.client_secret,
+        audience=settings.audience,
+        algorithm=settings.algorithm,
+        required_scopes=settings.required_scopes,
+        base_url=settings.resource_url,
+        jwt_signing_key=settings.jwt_signing_key,
     )
 
 
@@ -184,4 +256,5 @@ def _build_entra(settings: AuthSettings) -> AuthProvider:
 register_auth_mode("unset", _build_unset)
 register_auth_mode("static", _build_static)
 register_auth_mode("jwks", _build_jwks)
+register_auth_mode("oidc_proxy", _build_oidc_proxy)
 register_auth_mode("entra", _build_entra)

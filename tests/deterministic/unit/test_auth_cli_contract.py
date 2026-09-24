@@ -64,3 +64,32 @@ def test_core_and_container_agree_on_required_scopes(keypair, mint):
     token = mint(scope="kdbx.read")
     settings = _settings(pub, required_scopes=["kdbx.write"])
     assert verify_token(token, settings).valid == _container_accepts(settings, token)
+
+
+@pytest.mark.parametrize(
+    "scope_claim",
+    [
+        ["kdbx.read", 1, None],  # list with non-string members
+        [["nested"]],  # list with an UNHASHABLE member
+        12345,  # wrong type entirely
+        {"scope": "kdbx.read"},  # wrong type, object
+    ],
+    ids=["non-string-members", "unhashable-member", "wrong-type-int", "wrong-type-object"],
+)
+@pytest.mark.parametrize("required", [None, ["kdbx.read"]], ids=["no-required", "required"])
+def test_core_and_container_agree_on_hostile_scope_claims(keypair, mint, scope_claim, required):
+    """The drift guard's blind spot, now closed.
+
+    The parametrizations above only ever fed a *well-formed* scope claim, so `kx-auth-core` was free
+    to drift from `JWTVerifier` on every malformed shape without this file noticing. That matters
+    because `_extract_scopes` deliberately mirrors FastMCP: hardening it to drop non-string members
+    and to name a malformed claim in its reason must not change the accept/reject verdict, and a
+    future "just reject the hostile token" change here would silently make `kx auth introspect`
+    disagree with what the container enforces. Neither side may raise, either — the unhashable case
+    used to escape as a bare TypeError.
+    """
+    _, pub = keypair
+    token = mint(extra_claims={"scope": scope_claim})
+    kw = {"required_scopes": required} if required else {}
+    settings = _settings(pub, **kw)
+    assert verify_token(token, settings).valid == _container_accepts(settings, token)

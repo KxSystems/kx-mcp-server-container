@@ -6,9 +6,7 @@ The complete front-to-back reference for securing a kx-mcp container: **inbound*
 incrementally — start with no auth at all, and harden path by path.
 
 If you are deploying rather than configuring auth specifically, start with the
-[deployment guide](deployment.md). (The design rationale behind each seam — container shape,
-outbound token exchange, plain-kdb+ identity assertion, authorization — is maintained in the
-project's internal design docs.)
+[deployment guide](deployment.md).
 
 ## The zero-setup default
 
@@ -20,9 +18,10 @@ collapse to the developer:
 uv run kx-mcp --bundles kdbx --transport stdio
 ```
 
-No `KX_MCP_AUTH*` variables, no tokens, no IdP. Every request is anonymous; backends are reached
-with whatever static credentials the backend config supplies (`KDBX_DB_USERNAME`/`_PASSWORD`, etc.).
-Everything below is what you add when more than one principal is in the picture.
+There are no `KX_MCP_AUTH*` variables to configure and no token to present — no IdP sits behind any
+of it. Every request is anonymous; backends are reached with whatever static credentials the backend
+config supplies (`KDBX_DB_USERNAME`/`_PASSWORD`, etc.). Everything below is what you add when more
+than one principal is in the picture.
 
 ## The three seams at a glance
 
@@ -35,7 +34,7 @@ MCP client ──bearer──▶ [ inbound: KX_MCP_AUTH ] ──principal──�
 
 | Seam | Selector variable | Default | Modes / strategies |
 | --- | --- | --- | --- |
-| Inbound authn | `KX_MCP_AUTH` | `unset` (off) | `unset` · `static` · `jwks` · `entra` |
+| Inbound authn | `KX_MCP_AUTH` | `unset` (off) | `unset` · `static` · `jwks` · `oidc_proxy` · `entra` |
 | Authorization | `KX_MCP_AUTHZ` | `""` (route-only) | `""` · `static` · `kdbx_rbac` |
 | Outbound identity | per backend, e.g. `KDBAI_DB_OUTBOUND_STRATEGY` | `""` (static creds) | `passthrough` · `service_account` · `rfc_8693` · custom |
 
@@ -84,11 +83,81 @@ Proven live: [`demos/claude-code-live-kdbai/`](../demos/claude-code-live-kdbai/)
 no pre-injected token discovers Keycloak via RFC 9728, registers itself via DCR, and logs the user
 in through the browser.
 
+### `oidc_proxy` — any OIDC issuer as the login front door
+
+`jwks` advertises your IdP and expects the client to register itself there. That needs **open
+dynamic client registration**, which most production issuers restrict — a locked-down Keycloak
+realm, Auth0, or Okta will refuse, and the client can never complete the flow. `oidc_proxy` runs
+FastMCP's `OIDCProxy` instead: you pre-register **one** app at the issuer, and the container
+presents a DCR-compatible facade to clients while brokering the real login on that app's behalf.
+Every upstream endpoint is read from the issuer's discovery document, so it works with any
+OIDC-compliant provider.
+
+This is [`entra`](#entra--microsoft-entra-id-as-the-login-front-door) generalised — same proxy
+pattern, but the provider is named by a discovery URL rather than pinned to Microsoft.
+
+```bash
+KX_MCP_AUTH=oidc_proxy
+KX_MCP_AUTH_ISSUER=https://idp.example/realms/quants   # discovery URL is derived from this
+KX_MCP_AUTH_RESOURCE_URL=https://mcp.example           # the container's public URL
+KX_MCP_AUTH_CLIENT_ID=<pre-registered-client-id>
+KX_MCP_AUTH_CLIENT_SECRET=<client-secret>
+KX_MCP_AUTH_AUDIENCE=kx-mcp-aud                        # strongly recommended (see below)
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `KX_MCP_AUTH_ISSUER` | — | **Required** (unless `CONFIG_URL` is set). The discovery document is derived as `{issuer}/.well-known/openid-configuration`. |
+| `KX_MCP_AUTH_CONFIG_URL` | derived | Names the discovery document explicitly. Needed by issuers that don't serve it at the standard path (Entra v2.0, some Auth0/Okta setups). |
+| `KX_MCP_AUTH_CLIENT_ID` | — | **Required.** The one app you pre-register at the issuer. |
+| `KX_MCP_AUTH_CLIENT_SECRET` | — | Required unless you set `JWT_SIGNING_KEY` (a public/PKCE client). |
+| `KX_MCP_AUTH_RESOURCE_URL` | — | **Required.** The container's public base URL, as clients reach it. |
+| `KX_MCP_AUTH_AUDIENCE` | — | Expected `aud` claim. Unset logs a warning — see below. |
+| `KX_MCP_AUTH_REQUIRED_SCOPES` | — | Scopes the bearer must carry. |
+| `KX_MCP_AUTH_JWT_SIGNING_KEY` | derived | Signs container-issued tokens and keys the OAuth-state store. Derived from the client secret when unset. |
+| `KX_MCP_AUTH_OIDC_STRICT` | `true` | Set `false` to accept a discovery document missing an OIDC-required field. |
+
+**At the issuer**, register one confidential client allowing the authorization-code grant, with
+redirect URI `{KX_MCP_AUTH_RESOURCE_URL}/auth/callback` — that path is FastMCP's default and isn't
+configurable here. Add an audience mapper matching `KX_MCP_AUTH_AUDIENCE`. Clients register with
+the *container*, not the issuer.
+
+**Set `KX_MCP_AUTH_AUDIENCE`.** Unset, the `aud` claim isn't validated, so any token the issuer
+minted for any other application in the realm is accepted. The container warns but still starts.
+
+Deployment notes — none of these apply to `jwks`:
+
+- **`RESOURCE_URL` is load-bearing, not just advertised.** The container's RFC 8414 metadata names
+  itself and it serves `/authorize`, `/token` and `/register` locally, so this must be the URL
+  clients actually reach (proxy-aware) or they get endpoints that don't resolve.
+- **Startup fetches the discovery document** (10s timeout), so an unreachable issuer refuses to
+  start rather than failing at first login.
+- **State is durable and node-local** — client registrations, PKCE verifiers and encrypted upstream
+  tokens in a Fernet-encrypted store under FastMCP's data directory. Mount it if a restart
+  shouldn't force clients to re-register; each replica keeps its own.
+- **That store's key derives from `CLIENT_SECRET`**, so rotating the secret re-keys it and clients
+  silently re-register. Set `KX_MCP_AUTH_JWT_SIGNING_KEY` to decouple the two.
+- **The bearer a client receives is minted by the container, not the issuer.** `/token` returns a
+  container-signed JWT (`iss`/`aud` name the container itself); the issuer's own token is kept
+  server-side and never handed to the client. Consequence: a token the issuer minted directly
+  (e.g. by password grant) is **not** accepted here even if it would pass under `jwks` — the
+  container only honours bearers it minted. Proven against a live Keycloak authorization-code
+  flow in `tests/deterministic/realidp/idp/test_oidc_proxy_code_flow.py`.
+- **A user sees the container's own consent screen before the redirect to the issuer.** FastMCP's
+  `OAuthProxy` (the base both `oidc_proxy` and `entra` build on) shows this by default on every
+  authorization-code flow; there is no `KX_MCP_AUTH_*` var to skip it today. Expect it — the
+  realidp authorization-code test drives it by scraping and submitting the approval form
+  (`tests/deterministic/realidp/idp/oidc_proxy_driver.py`).
+
+If a client already *holds* a token from the issuer, prefer `jwks` — no app, no secret, no state.
+
 ### `entra` — Microsoft Entra ID as the login front door
 
 Entra has **no open dynamic client registration**, so the discovery/DCR flow above can't work
 against it directly. `entra` mode instead runs FastMCP's `AzureProvider` (an OAuth proxy): you
-pre-register **one** app in Entra, and the container brokers the browser login on its behalf.
+pre-register **one** app in Entra, and the container brokers the browser login on its behalf. It is
+the provider-pinned case of [`oidc_proxy`](#oidc_proxy--any-oidc-issuer-as-the-login-front-door)
+above, and shares its statefulness and startup-discovery consequences.
 
 ```bash
 KX_MCP_AUTH=entra
@@ -138,7 +207,7 @@ selects a strategy via its own config fragment (the shared seam is
 | Strategy | The backend sees | Use when |
 | --- | --- | --- |
 | *(empty, default)* | The backend's static credentials | No per-user identity at the backend; local dev |
-| `passthrough` | **The end user** — the inbound bearer is forwarded unchanged | Backend trusts the same issuer and enforces its own per-user ACL |
+| `passthrough` | **The end user** — the *validated* inbound bearer is forwarded unchanged (requires `KX_MCP_AUTH`; the combination with inbound auth unset is refused at startup) | Backend trusts the same issuer and enforces its own per-user ACL |
 | `service_account` | **The container** — its own client-credentials token | Backend authorizes the workload, not the user |
 | `rfc_8693` | The user, re-scoped — token exchanged at an STS | A real STS deployment (mock-tested; no current backend requires it) |
 
@@ -174,9 +243,10 @@ KDBX_DB_USERNAME=<service-account>
 KDBX_DB_PASSWORD=<service-account-pw>   # or KDBX_DB_PASSWORD_FILE (wins when set)
 ```
 
-When assertion is **off** (the default), those credentials are simply the single backend
-connection identity; the container does not bind the inbound principal in q. When assertion is on,
-they become a trusted service-account login. Configure exactly one password source on the MCP side:
+When assertion is **off** (the default), those credentials are just the single backend connection's
+identity, and the container never binds the inbound principal in q. Turn assertion on and the same
+credentials become a trusted service-account login instead. Configure exactly one password source on
+the MCP side:
 the environment value or, preferably in production, a mounted password file.
 
 The container connects as a trusted service account (per-principal cached connections), and calls
@@ -219,8 +289,8 @@ Authorization has two layers, distinguished by *where* the check runs and *what*
 | `kdbx_rbac` | kdb-x adapter: delegates the `(action; resource)` decision to the q `.kx.auth` engine. |
 
 The Python `@authorize(...)` decorator depends only on the fastmcp-free authorization adapter seam,
-not on `kx.auth`. In particular, `static` reads its YAML policy in the container and works with no
-q authorization module. `kx.auth` is required only when the selected adapter or data gate actually
+not on `kx.auth`. `static` reads its YAML policy in the container and works with no q authorization
+module at all. `kx.auth` is required only when the selected adapter or data gate actually
 consults q (`kdbx_rbac` or `KDBX_DB_DATA_GATE=true`, both of which also require identity assertion).
 
 ```bash
@@ -254,11 +324,11 @@ capGrants,:enlist (`admin;`admin;`kdbx.metadata);
 The first `admin` is the asserted group, the second is the action. Omitting that row leaves refresh
 default-denied while other route-only metadata reads continue to use the data gate.
 
-Two rules worth internalising: a **decorated** action absent from the file is **denied** (a declared
-capability concern with no grant means nobody is granted), and route-only is expressed by *not
-decorating a tool* — never by omitting a line. A PEP-1 deny surfaces to the agent as a clean
-structured `AuthorizationDenied` tool error; a PEP-2 data deny is the backend's own structured
-denial — either way the agent can pivot without crashing.
+A **decorated** action absent from the file is **denied** — a declared capability concern with no
+grant means nobody is granted. Route-only is expressed by *not decorating a tool*, never by omitting
+a line. A PEP-1 deny surfaces to the agent as a clean structured `AuthorizationDenied` tool error; a
+PEP-2 data deny is the backend's own structured denial, and the agent can pivot on either without a
+crash.
 
 ---
 
@@ -290,9 +360,23 @@ kx auth introspect "$TOKEN"
 
 ## Audit
 
-Every dispatch is logged on the `kx_mcp.audit` logger (INFO):
-`subject / action / target / outcome`, with `action ∈ {tool_invoke, resource_read, prompt_get}` —
-plus the authz decision + adapter when PEP-1 runs. Audit visibility is an entry-point job: the
+Every access decision is logged on the `kx_mcp.audit` logger (INFO) as one `audit key=value …` line.
+Two kinds:
+
+- **Dispatch** — `subject / action / target / outcome`, with
+  `action ∈ {tool_invoke, resource_read, prompt_get}`, plus `decision=allow|deny adapter=<name>` when
+  PEP-1 runs (`outcome=denied` when the capability check refused).
+- **Authentication** — a bearer the verifier rejected:
+  `subject=anonymous action=authenticate target=<KX_MCP_AUTH mode> outcome=denied error=invalid_token reason=<why> claimed_iss=… claimed_sub=… claimed_azp=…`.
+  `reason` is a best-effort diagnosis from the *unverified* token: `expired`, `issuer`, `audience`,
+  `scope`, `malformed`, or `signature_or_key` when everything checkable matched (a wrong key, an
+  unknown `kid`, an unreachable JWKS — indistinguishable from outside the verifier). The `claimed_*`
+  fields are what the token *said*, never what was proven: use them for "who kept trying", never for
+  authorization. In `oidc_proxy`/`entra` the presented token is the proxy's own, so `reason` is
+  limited to `expired`/`malformed`/`signature_or_key`. Requests carrying no bearer at all are **not**
+  audited — that is every MCP client's first discovery probe (RFC 6750 §3.1), not an attempt.
+
+Audit visibility is an entry-point job: the
 `kx-mcp` launcher configures it; if you embed `make_parent` in your own glue, call
 `configure_logging()` yourself. Tune with `KX_MCP_LOG_LEVEL`.
 

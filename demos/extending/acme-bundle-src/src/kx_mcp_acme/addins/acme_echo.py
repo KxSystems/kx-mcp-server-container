@@ -9,7 +9,7 @@ composed tool is ``acme_echo``.
 from fastmcp.tools import tool
 
 
-@tool
+@tool(annotations={"readOnlyHint": True})
 def echo(text: str) -> str:
     """Echo the input text back."""
     return text

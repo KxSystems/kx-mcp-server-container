@@ -114,6 +114,65 @@ def jwks_uri(keypair):
 
 
 @pytest.fixture
+def oidc_issuer(keypair):
+    """An in-process OIDC issuer — discovery document + JWKS, no external IdP needed.
+
+    ``oidc_proxy`` mode reads its upstream endpoints from a discovery document at construction, so
+    it can't be exercised without one. Yields ``(issuer_url, lenient_config_url)``; the second
+    serves the same document minus ``subject_types_supported``, for the strict/lenient switch.
+    The authorize and token endpoints are advertised but not implemented — these tests drive the
+    container's own OAuth surface, not an upstream login.
+    """
+    _, pub = keypair
+    pub_key = serialization.load_pem_public_key(pub.encode())
+    jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(pub_key))
+    jwk.update({"kid": KID, "use": "sig", "alg": "RS256"})
+    jwks_body = json.dumps({"keys": [jwk]}).encode()
+
+    holder: dict[str, str] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 (http.server API)
+            issuer = holder["issuer"]
+            if self.path == "/jwks":
+                body = jwks_body
+            elif self.path in ("/.well-known/openid-configuration", "/lenient-configuration"):
+                doc = {
+                    "issuer": issuer,
+                    "authorization_endpoint": f"{issuer}/protocol/openid-connect/auth",
+                    "token_endpoint": f"{issuer}/protocol/openid-connect/token",
+                    "jwks_uri": f"{issuer}/jwks",
+                    "response_types_supported": ["code"],
+                    "subject_types_supported": ["public"],
+                    "id_token_signing_alg_values_supported": ["RS256"],
+                    "grant_types_supported": ["authorization_code", "refresh_token"],
+                    "code_challenge_methods_supported": ["S256"],
+                }
+                if self.path == "/lenient-configuration":
+                    del doc["subject_types_supported"]
+                body = json.dumps(doc).encode()
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):  # silence per-request logging
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    holder["issuer"] = f"http://127.0.0.1:{httpd.server_address[1]}"
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        yield holder["issuer"], f"{holder['issuer']}/lenient-configuration"
+    finally:
+        httpd.shutdown()
+
+
+@pytest.fixture
 def mock_sts():
     """An in-process OAuth token endpoint shared across all test trees.
 

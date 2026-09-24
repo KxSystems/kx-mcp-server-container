@@ -20,7 +20,7 @@ def test_query_data_success(mocker):
     df = pd.DataFrame({"sym": ["AAPL", "MSFT"], "price": [1.0, 2.0]})
     mocker.patch.object(mod, "get_table", return_value=_table(mocker, df))
 
-    out = asyncio.run(mod.kdbai_query_data_impl("trades", "mydb"))
+    out = mod.kdbai_query_data_impl("trades", "mydb")
     assert out["status"] == "success"
     assert out["recordsCount"] == 2
     assert out["records"][0] == {"sym": "AAPL", "price": 1.0}
@@ -28,7 +28,7 @@ def test_query_data_success(mocker):
 
 def test_query_data_error(mocker):
     mocker.patch.object(mod, "get_table", side_effect=RuntimeError("bad query"))
-    out = asyncio.run(mod.kdbai_query_data_impl("trades", "mydb"))
+    out = mod.kdbai_query_data_impl("trades", "mydb")
     assert out["status"] == "error"
     assert "bad query" in out["message"]
 

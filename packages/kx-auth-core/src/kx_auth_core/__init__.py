@@ -13,6 +13,7 @@ Deliberately depends on no fastmcp, so bundles and the CLI can use it without pu
 
 from .assertion import project_from_claims, project_principal
 from .authz import (
+    ROUTE_ONLY_MODES,
     AuthzAdapter,
     AuthzDecision,
     AuthzRequest,
@@ -66,4 +67,5 @@ __all__ = [
     "decide",
     "register_authz_adapter",
     "authz_adapters",
+    "ROUTE_ONLY_MODES",
 ]

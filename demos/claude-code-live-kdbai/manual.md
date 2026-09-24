@@ -31,8 +31,10 @@ chain — the thing the tests can't prove because they use pre-minted tokens.
 **Infrastructure** (one-time per machine):
 
 ```bash
-# The kdbai-db image is registry-gated:
-docker login registry.gitlab.com
+# The kdbai-db image is registry-gated on portal.dl.kx.com — sign in there, generate a bearer
+# token under your username → Token Management, then:
+# (see https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image)
+docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>
 
 # A kdb+ license is required for kdbai-db:
 export KDB_LICENSE_B64=$(base64 ~/.kx/kc.lic)

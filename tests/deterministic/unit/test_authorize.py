@@ -25,7 +25,8 @@ from kx_mcp_core.auth import (
     AuthzSettings,
     authorize,
     configure_authz,
-    current_authz_decision,
+    authz_decision,
+    begin_authz_dispatch,
 )
 
 # The package attribute `kx_mcp_core.auth.authorize` is the *function* (re-exported), shadowing the
@@ -67,7 +68,7 @@ def policy_file(tmp_path):
 def _reset_authz():
     """Reset the cached settings between tests so env/state never leaks across cases."""
     authorize_mod._SETTINGS = None
-    current_authz_decision.set(None)
+    begin_authz_dispatch()
     yield
     authorize_mod._SETTINGS = None
 
@@ -76,23 +77,23 @@ def invoke(fn):
     """Run a gated tool (sync/async) and return ``(result, exc, decision)``.
 
     The decision is read **inside** the run: ``asyncio.run`` starts a fresh contextvar context, so
-    the decorator's ``current_authz_decision.set(...)`` would be discarded before an outer ``.get()``
+    the decorator's ``stamp_authz_decision(...)`` would be discarded before an outer ``.get()``
     (in the real server the middleware reads it within the same awaited task — see the integration
     test)."""
 
     async def arun():
         try:
             r = await fn()
-            return r, None, current_authz_decision.get()
+            return r, None, authz_decision()
         except Exception as e:  # noqa: BLE001 — tests inspect the captured exception
-            return None, e, current_authz_decision.get()
+            return None, e, authz_decision()
 
     if asyncio.iscoroutinefunction(fn):
         return asyncio.run(arun())
     try:
-        return fn(), None, current_authz_decision.get()
+        return fn(), None, authz_decision()
     except Exception as e:  # noqa: BLE001
-        return None, e, current_authz_decision.get()
+        return None, e, authz_decision()
 
 
 # --- route-only (authz off) --------------------------------------------------------------------
@@ -168,6 +169,15 @@ def test_namespace_derived_from_colon_resource_prefix(as_principal, policy_file)
     assert result == "ran" and exc is None
 
 
+@pytest.mark.parametrize("resource", [".leadingdot", ":thing", ""])
+def test_resource_with_no_namespace_prefix_fails_loudly_at_decoration(resource):
+    """A resource with a LEADING separator (or an empty resource) derives `namespace == ""` — never
+    a real policy key. This must raise at decoration time (a config error that can and must surface
+    where it is written), not silently deny every call at runtime."""
+    with pytest.raises(ValueError, match="namespace"):
+        authorize(action="write", resource=resource)
+
+
 def test_decorated_but_unlisted_action_denies(as_principal, policy_file):
     """'query' is not listed under kdbx: -> deny (decorated => a declared concern, no grant)."""
     configure_authz(AuthzSettings(mode="static", policy_file=policy_file))
@@ -195,6 +205,34 @@ def test_groups_claim_path_is_configurable(as_principal, policy_file):
     assert result == "ran" and exc is None
 
 
+@pytest.mark.parametrize(
+    "groups_claim,artifact",
+    [
+        ([["nested"], "flat"], "['nested']"),
+        ([{"group": "admin"}, "flat"], "{'group': 'admin'}"),
+    ],
+)
+def test_nested_groups_claim_member_is_not_treated_as_a_real_group(
+    tmp_path, as_principal, groups_claim, artifact
+):
+    """`_as_groups` coerces a non-string claim member with `str(g)`, so a nested list/object
+    member becomes a Python repr that enters the group-intersection set as a real group NAME. Go
+    black-box through @authorize (not the private `_as_groups` helper): grant the EXACT artifact
+    the buggy stringification would produce, and confirm a principal with that raw claim shape is
+    still denied — proving the repr string never functions as a real group."""
+    p = tmp_path / "nested-groups.yaml"
+    p.write_text(f'kdbx:\n  write: ["{artifact}"]\n')
+    configure_authz(AuthzSettings(mode="static", policy_file=str(p)))
+    as_principal({"sub": "alice", "groups": groups_claim})
+
+    @authorize(action="write", resource="kdbx.sql")
+    async def tool():
+        return "ran"
+
+    result, exc, decision = invoke(tool)
+    assert isinstance(exc, AuthorizationDenied), (result, exc, decision)
+
+
 def test_sync_tool_is_also_gated(as_principal, policy_file):
     configure_authz(AuthzSettings(mode="static", policy_file=policy_file))
     as_principal({"sub": "bob", "groups": ["viewers"]})
@@ -205,6 +243,35 @@ def test_sync_tool_is_also_gated(as_principal, policy_file):
 
     _, exc, _ = invoke(tool)
     assert isinstance(exc, AuthorizationDenied)
+
+
+def test_reconfigure_static_replaces_the_previous_policy(tmp_path, as_principal):
+    """configure_authz is a process-GLOBAL cache: one `_SETTINGS` plus one registry slot per mode
+    name. Calling it twice in static mode REPLACES the live policy, not merges it — the intended
+    single-config-per-process invariant, pinned so a future per-mount authz config change would
+    have to touch this test deliberately rather than silently break it."""
+    first = tmp_path / "first.yaml"
+    first.write_text("alpha:\n  write: [admin]\n")
+    second = tmp_path / "second.yaml"
+    second.write_text("beta:\n  write: [admin]\n")
+
+    as_principal({"sub": "root", "groups": ["admin"]})
+
+    @authorize(action="write", resource="alpha.thing")
+    async def alpha_tool():
+        return "ran"
+
+    @authorize(action="write", resource="beta.thing")
+    async def beta_tool():
+        return "ran"
+
+    configure_authz(AuthzSettings(mode="static", policy_file=str(first)))
+    assert invoke(alpha_tool)[0] == "ran"
+    assert isinstance(invoke(beta_tool)[1], AuthorizationDenied)
+
+    configure_authz(AuthzSettings(mode="static", policy_file=str(second)))
+    assert isinstance(invoke(alpha_tool)[1], AuthorizationDenied)
+    assert invoke(beta_tool)[0] == "ran"
 
 
 # --- static adapter construction (loud config errors) -----------------------------------------

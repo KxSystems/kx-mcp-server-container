@@ -1,7 +1,7 @@
 # Tests
 
-The test suite is all exact pass/fail tests — unit, subprocess integration, and real-IdP.
-Each test owns its inputs and asserts a specific outcome.
+The test suite is all exact pass/fail tests — unit, subprocess integration, and real-IdP. Each
+test owns its own inputs and checks one specific outcome.
 
 ## Layout
 

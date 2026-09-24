@@ -13,8 +13,20 @@ def is_nested_filter(item):
 def parse_temporal_filters(filters: Any, schema: List[dict]) -> Any:
     if not isinstance(filters, list):
         return filters  # Base case
-    result = []
+    # Annotated: the pass-through branch appends the item verbatim, which may be a tuple, so the
+    # element type is deliberately open rather than inferred from the rewritten-filter branch.
+    result: list = []
     for f in filters:
+        if not isinstance(f, (list, tuple)):
+            # A filter ITEM must be a sequence. Without this, `len(f)` on a 3-character string is 3,
+            # so `op, left, right = f` unpacked it into three characters and emitted a nonsense
+            # filter with no error at all (a 3-key dict unpacked into its KEYS, just as quietly).
+            # Note this rejects by TYPE only: an unexpected LENGTH still passes through untouched
+            # (see the `else` branch), which is the documented behaviour pinned by
+            # test_a_malformed_filter_item_is_passed_through_not_recursed.
+            raise TypeError(
+                f"filter item must be a list or tuple, got {type(f).__name__}: {f!r}"
+            )
         if len(f) == 3:
             # Could be an operator like ["or", [...], [...]] or a comparison like ["<", "time", "2025-01-01..."]
             op, left, right = f
@@ -35,7 +47,11 @@ def parse_temporal_filters(filters: Any, schema: List[dict]) -> Any:
             result.append([op, parse_temporal_filters([inner], schema)[0]])
 
         else:
-            # Unexpected structure — recurse on every item
+            # An unexpected LENGTH (not 2 or 3) passes through verbatim. Note this does NOT recurse,
+            # despite what the comment here used to claim — so any temporal value nested inside such
+            # an item is silently not cast. Left as-is deliberately: every filter the real kdbai DSL
+            # produces is a 2- or 3-item list, and tightening the length rule is a separate,
+            # behaviour-changing decision from rejecting an outright wrong TYPE above.
             result.append(f)
 
     return result
@@ -70,5 +86,10 @@ def cast_temporal_value(col, val, schema):
         elif field_type == "date":
             result = date.fromisoformat(val.split("T")[0])
         elif field_type == "time":
-            result = time.fromisoformat(val.split("T")[1])
+            # Normalise the 'Z' UTC suffix exactly as the datetime branch above does (KXI-72920).
+            # `time.fromisoformat` only learned to parse a bare 'Z' in 3.11, so without this a
+            # value like "2025-06-15T12:30:00Z" raised `ValueError: Invalid isoformat string:
+            # '12:30:00Z'` at this repo's declared 3.10 floor. kdbai_data.py's broad try/except
+            # swallowed it into a clean `status: error`, so the query silently didn't run.
+            result = time.fromisoformat(val.split("T")[1].replace("Z", "+00:00"))
     return result

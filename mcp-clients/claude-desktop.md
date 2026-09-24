@@ -15,7 +15,7 @@ This guide explains how to configure Claude Desktop with the KDB-X MCP Server.
 
 ## Overview
 
-Claude Desktop is an MCP client from Anthropic that supports Model Context Protocol (MCP) servers. This configuration allows you to use the KDB-X MCP Server directly with Claude Desktop, enabling natural language interactions with your KDB-X database.
+Claude Desktop is an MCP client from Anthropic that supports Model Context Protocol (MCP) servers. This guide wires up the KDB-X MCP Server so you can query your KDB-X database from Claude Desktop in plain language.
 
 ## Prerequisites
 
@@ -217,7 +217,7 @@ Once configured, you can interact with your KDB-X database using natural languag
 
 ### Accessing MCP Tools
 
-MCP tools are the primary way to interact with your KDB-X database. Tools are automatically available in Claude Desktop chat once the MCP server is connected.
+MCP tools are the primary way to interact with your KDB-X database, and they show up in Claude Desktop chat automatically once the MCP server is connected.
 
 **Method 1: Natural Language (Recommended)**
 
@@ -239,7 +239,7 @@ If you want to explicitly select which tools Claude can use:
 
 ### Accessing MCP Resources
 
-The KDB-X MCP server provides resources that can be added as context to your chat conversations. Resources provide static information that can help Claude better understand your KDB-X setup.
+The KDB-X MCP server provides resources that can be added as context to your chat conversations — static information that helps Claude understand your KDB-X setup.
 
 **How to Access Resources:**
 
@@ -250,7 +250,7 @@ The KDB-X MCP server provides resources that can be added as context to your cha
 
 ### Accessing MCP Prompts
 
-The KDB-X MCP server provides pre-defined prompts for common tasks. Prompts are reusable workflows that guides Claude through specific operations.
+The KDB-X MCP server provides pre-defined prompts for common tasks: reusable workflows that guide Claude through specific operations.
 
 **How to Access Prompts:**
 

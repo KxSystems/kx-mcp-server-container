@@ -22,10 +22,19 @@ from kx_auth_core import (
     register_outbound_strategy,
 )
 
-from .audit import AuditMiddleware
-from .authorize import AuthorizationDenied, authorize, configure_authz, current_authz_decision
+from .audit import AuditMiddleware, audit_authentication_denials
+from .authorize import (
+    AuthorizationDenied,
+    AuthzSlot,
+    authorize,
+    authz_decision,
+    begin_authz_dispatch,
+    configure_authz,
+    end_authz_dispatch,
+    stamp_authz_decision,
+)
 from .authz_settings import AuthzSettings
-from .principal import current_principal
+from .principal import current_principal, subject_from
 from .providers import auth_modes, build_auth_provider, register_auth_mode
 from .settings import AuthSettings
 
@@ -36,7 +45,9 @@ __all__ = [
     "register_auth_mode",
     "auth_modes",
     "current_principal",
+    "subject_from",
     "AuditMiddleware",
+    "audit_authentication_denials",
     # outbound
     "OutboundConfig",
     "OutboundCredential",
@@ -56,5 +67,9 @@ __all__ = [
     "AuthzSettings",
     "AuthorizationDenied",
     "configure_authz",
-    "current_authz_decision",
+    "AuthzSlot",
+    "authz_decision",
+    "begin_authz_dispatch",
+    "end_authz_dispatch",
+    "stamp_authz_decision",
 ]

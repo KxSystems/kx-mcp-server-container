@@ -22,6 +22,11 @@ dependencies = [
 # Mount-only: no standalone console script. The container (kx-mcp-core) owns serving — run the
 # kdb-x backend via `uv run kx-mcp --bundles kdbx`. The bundle exposes only build_server() -> FastMCP.
 
+[project.urls]
+Homepage = "https://github.com/KxSystems/kx-mcp-server-container"
+Repository = "https://github.com/KxSystems/kx-mcp-server-container"
+Changelog = "https://github.com/KxSystems/kx-mcp-server-container/blob/main/CHANGELOG.md"
+
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"

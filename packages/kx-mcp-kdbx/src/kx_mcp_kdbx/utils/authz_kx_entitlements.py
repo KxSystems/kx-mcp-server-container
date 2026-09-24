@@ -23,6 +23,14 @@ through an alias or construction the tokenizer misses) bypasses only *this conta
 the q-side gate (the host's ``.s.e`` wrap, where wired) still backstops. A false positive (a table
 name inside a string literal) fails *safe* — it can only narrow, never leak.
 
+**That "fails safe" holds for false positives only — a false negative fails OPEN.** The asymmetry is
+the whole risk here and used to go unstated. A missed table means the consult is *skipped*, and the
+q-side backstop is conditional on the host wrapping ``.s.e`` itself: the deployment shape this
+adapter's own e2e test exercises (``kdbx_data_gate_host.q``) deliberately does *not* wrap it, so in
+that shape there is no backstop at all. A case-mismatch false negative was exactly this, and leaked
+a real table; see the case-insensitivity note on :func:`derive_tables`. Treat any new tokenizer gap
+as a leak until a wired backstop is demonstrated, not as a narrowing.
+
 Registered under ``"kdbx_entitlements"`` on the same :mod:`kx_auth_core.authz` registry as the
 capability-check adapters, but it is **not** selected by ``KX_MCP_AUTHZ`` (that selects the
 capability strategy): the tool path drives it directly through :func:`consult_data_gate` when the
@@ -43,6 +51,7 @@ from kx_auth_core.authz import AuthzDecision, AuthzRequest, decide, register_aut
 from kx_mcp_kdbx.utils.authz_kx_rbac import _resolve_bound_conn
 from kx_mcp_kdbx.utils.denial import is_denial
 from kx_mcp_kdbx.utils.kdbx import _current_principal
+from kx_mcp_kdbx.utils.observe import q, record_authz
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +73,23 @@ _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 def derive_tables(query: str, known_tables: Sequence[str]) -> list[str]:
     """The tables a SQL query references: its identifier tokens ∩ the backend's ``tables[]``.
 
-    Case-sensitive exact match (q table names are case-sensitive). Best-effort by design — see the
-    module docstring for the false-negative/false-positive posture. Sorted so the derived set (and
-    the resource string built from it) is deterministic.
+    **Matched case-insensitively, returning the canonical q name.** q table *names* are
+    case-sensitive, but the SQL interface this tool sends the query to resolves identifiers
+    case-insensitively — so matching case-sensitively here meant ``SELECT * FROM SECRETS`` derived
+    *no* tables, the caller concluded "no tables referenced" and skipped the entitlement consult
+    altogether, and the query then reached ``.s.e``, which happily resolved ``secrets`` and returned
+    it. A principal entitled to nothing got the whole table back with ``status: success``. The gate
+    has to agree with the dialect that actually resolves the name, not with q's own naming rules.
+
+    If two known tables differ only by case, both canonical names are returned: the consult must
+    cover every table the dialect could have meant.
+
+    Still best-effort for the *tokenizer* reasons in the module docstring (an alias or a
+    construction the regex misses) — but no longer for casing. Sorted so the derived set (and the
+    resource string built from it) is deterministic.
     """
-    tokens = set(_IDENTIFIER.findall(query))
-    return sorted(t for t in known_tables if t in tokens)
+    tokens = {token.lower() for token in _IDENTIFIER.findall(query)}
+    return sorted(t for t in known_tables if t.lower() in tokens)
 
 
 def tables_from_resource(resource: str) -> list[str]:
@@ -97,7 +117,9 @@ def entitled_check(conn: kx.QConnection, action: str, resources: Sequence[str]) 
     ``decide()`` fails closed.
     """
     resource_to_table = {q_resource_for_table(table): table for table in resources}
-    result = conn(
+    result = q(
+        conn,
+        "entitled",
         ".kx.auth.entitled",
         kx.SymbolAtom(action),
         kx.SymbolVector(list(resource_to_table)),
@@ -128,17 +150,21 @@ def kdbx_entitlements_adapter(request: AuthzRequest) -> Union[bool, AuthzDecisio
         entitled = entitled_check(conn, request.action, tables)
     except Exception as exc:
         if is_denial(exc):
+            record_authz("kdbx_entitlements", request.action, "deny")
             return AuthzDecision(allowed=False, reason=str(exc).strip())
         raise  # not a policy deny — let decide() fail closed (infrastructure error)
     denied = [t for t in tables if t not in set(entitled)]
     if not denied:
+        record_authz("kdbx_entitlements", request.action, "allow")
         return True
     refused = ", ".join(denied)
     if not entitled:
+        record_authz("kdbx_entitlements", request.action, "deny")
         return AuthzDecision(
             allowed=False,
             reason=f"{request.subject} not permitted {request.action} on {refused}",
         )
+    record_authz("kdbx_entitlements", request.action, "partial")
     return AuthzDecision(
         allowed=True,
         reason=f"scoped down: {request.subject} not permitted {request.action} on {refused}",
@@ -153,7 +179,7 @@ def consult_data_gate(action: str, tables: Sequence[str]) -> AuthzDecision:
     are static at decoration time, while the table set is per-query). Builds the ``AuthzRequest``
     (same subject derivation as the decorator: ``sub`` claim → client id → ``"anonymous"``), runs
     ``decide(strategy="kdbx_entitlements")`` — inheriting its fail-closed + adapter-stamping
-    posture — and stashes the decision on ``current_authz_decision`` so the parent AuditMiddleware
+    posture — and stamps the decision with ``stamp_authz_decision`` so the parent AuditMiddleware
     folds ``decision`` + ``adapter`` into the dispatch's audit record. On a dispatch that already
     ran a capability check the slot is overwritten (last-writer-wins): the capability check ran
     first and only an *allow* reaches this consult, so the line carries the decision that determined
@@ -171,9 +197,9 @@ def consult_data_gate(action: str, tables: Sequence[str]) -> AuthzDecision:
     )
     decision = decide(request, strategy=ADAPTER_NAME)
     try:
-        from kx_mcp_core.auth import current_authz_decision
+        from kx_mcp_core.auth import stamp_authz_decision
 
-        current_authz_decision.set(decision)
+        stamp_authz_decision(decision)
     except ImportError:  # standalone bundle posture — no container, no audit middleware
         pass
     return decision

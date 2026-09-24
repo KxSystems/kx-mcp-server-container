@@ -141,6 +141,41 @@ def test_zero_ttl_disables_caching():
     assert conn.fetches == 2
 
 
+def test_concurrent_cold_cache_requests_do_not_each_refetch():
+    """REGRESSION (see mcp-container/adversarial-review-2026-08.md § kdb-x backend).
+
+    detect_metadata's check-then-fetch-then-store sequence had no single-flight lock — N
+    concurrent callers against a cold cache each paid their own full fetch instead of one winner +
+    N waiters, a thundering herd at exactly the moment the cache exists to prevent one."""
+    import threading
+    import time
+
+    class _SlowConn(_Conn):
+        def __call__(self, query, *args):
+            if query == ".j.j .aimeta.data[]":
+                time.sleep(0.05)
+            return super().__call__(query, *args)
+
+    conn = _SlowConn(_document())
+    cache = MetadataCache(300)
+    barrier = threading.Barrier(20)
+
+    def _go():
+        barrier.wait()
+        detect_metadata(conn=conn, cache=cache)
+
+    threads = [threading.Thread(target=_go) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Exactly one: `MetadataCache.fill` holds a dedicated fill lock across check -> fetch -> store,
+    # so the 19 losers re-check and hit the cache the winner just populated. Pinned at 1 rather than
+    # a loose bound because any number above 1 means the coalescing is not actually happening.
+    assert conn.fetches == 1, conn.fetches
+
+
 def test_malformed_qipc_json_is_reported_as_invalid():
     class MalformedConn(_Conn):
         def __call__(self, query, *args):

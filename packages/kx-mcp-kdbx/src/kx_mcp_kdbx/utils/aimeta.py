@@ -19,6 +19,7 @@ from typing import Any
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 
 from kx_mcp_kdbx.settings import KDBConfig
+from kx_mcp_kdbx.utils.observe import q
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,11 @@ class MetadataCache:
     def __init__(self, ttl: int = 300):
         self.ttl = ttl
         self._lock = threading.Lock()
+        # Held across the whole check -> fetch -> store sequence by `fill()`, so N concurrent
+        # cold-cache callers produce ONE fetch and N-1 cache hits. Separate from `_lock`, which
+        # only ever guards the fields: taking `_lock` for the duration of a fetch would block
+        # `peek()` and every other reader on a qIPC round-trip.
+        self._fill_lock = threading.Lock()
         self._value: MetadataDetection | None = None
         self._fetched_at = 0.0
 
@@ -55,7 +61,24 @@ class MetadataCache:
                 return None
             if time.monotonic() - self._fetched_at >= self.ttl:
                 return None
-            return self._value
+            # Deep-copied like `peek()`: `MetadataDetection.document` is a mutable dict, and handing
+            # every cache hit the same object let one caller's mutation reach every other.
+            return copy.deepcopy(self._value)
+
+    def fill(self, fetch) -> MetadataDetection:
+        """Single-flight: return the cached value, else fetch once while others wait.
+
+        The check/fetch/store steps were individually atomic but the *sequence* was not, so a cold
+        cache under concurrent load meant every caller paid its own full fetch — a thundering herd
+        against the backend at exactly the moment the cache exists to protect it.
+        """
+        with self._fill_lock:
+            cached = self.get()  # re-check: the winner may have filled it while we waited
+            if cached is not None:
+                return cached
+            value = fetch()
+            self.put(value)
+            return value
 
     def put(self, value: MetadataDetection) -> None:
         with self._lock:
@@ -190,9 +213,9 @@ def classify_document(document: dict[str, Any] | None) -> MetadataDetection:
 
 def _fetch_ipc(conn) -> dict[str, Any] | None:
     try:
-        if not conn(AIMETA_PRESENCE_PROBE).py():
+        if not q(conn, "aimeta.probe", AIMETA_PRESENCE_PROBE).py():
             return None
-        raw = conn(".j.j .aimeta.data[]").py()
+        raw = q(conn, "aimeta.fetch", ".j.j .aimeta.data[]").py()
     except Exception as error:
         logger.debug(f"aimeta qIPC fetch failed: {error}")
         return None
@@ -218,7 +241,20 @@ def detect_metadata(
         cached = cache.get()
         if cached is not None:
             return cached
+        # Cold (or stale): go through the cache's single-flight so concurrent callers coalesce onto
+        # one fetch instead of each paying their own. `force=True` deliberately bypasses this — a
+        # forced refresh is asking for a fetch.
+        return cache.fill(lambda: _detect_uncached(conn=conn, config=config))
 
+    detected = _detect_uncached(conn=conn, config=config)
+    if cache is not None:
+        cache.put(detected)
+    return detected
+
+
+def _detect_uncached(*, conn=None, config: KDBConfig | None = None) -> MetadataDetection:
+    """One actual detection round-trip, with no cache involvement. Split out so the cache's
+    single-flight `fill()` and the forced/uncached paths share exactly one implementation."""
     if conn is None:
         from kx_mcp_kdbx.utils.kdbx import get_kdb_connection
 
@@ -229,8 +265,6 @@ def detect_metadata(
         detected = MetadataDetection(None, 1, "invalid", "native", str(error))
     if detected.detail:
         logger.warning(detected.detail)
-    if cache is not None:
-        cache.put(detected)
     return detected
 
 
@@ -240,9 +274,9 @@ def reload_remote_metadata(
     """Reload aimeta and replace the cache only when the refreshed document is usable."""
     previous = cache.peek() if cache is not None else None
     try:
-        if not conn(AIMETA_PRESENCE_PROBE).py():
+        if not q(conn, "aimeta.probe", AIMETA_PRESENCE_PROBE).py():
             return False, classify_document(None)
-        conn(".aimeta.reload[]")
+        q(conn, "aimeta.reload", ".aimeta.reload[]")
         try:
             refreshed = classify_document(_fetch_ipc(conn))
         except MetadataDocumentError as error:

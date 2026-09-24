@@ -36,9 +36,11 @@ class TestProviderRegistry:
         # Act
         result = get_provider("test_provider")
 
-        # Assert
-        assert result == mock_instance
+        # Assert: the factory returns an instrumented view of the registered class's instance.
         mock_provider_class.assert_called_once()
+        assert result._inner == mock_instance
+        result.cleanup_embedding_model()
+        mock_instance.cleanup_embedding_model.assert_called_once()
 
 
     def test_get_provider_unknown(self):

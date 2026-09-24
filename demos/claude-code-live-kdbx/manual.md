@@ -152,7 +152,7 @@ any data round-trip — narrow the capability grant in [`host.q`](host.q) to tra
 
 Restart the host and re-run as **bob**: now `.kx.auth.authorize[\`query;\`kdbx.sql]` denies him at
 PEP-1, the `@authorize` decorator raises `AuthorizationDenied` — *"not authorized: query on
-kdbx.sql"* — and the query never reaches the data gate. Two independent semantic RBAC sets, one
+kdbx.sql"* — and the query never reaches the data gate, so both RBAC sets are visible off the one
 `.kx.auth` engine.
 
 ## Wrinkles

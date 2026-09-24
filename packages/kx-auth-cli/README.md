@@ -1,18 +1,18 @@
 # kx-auth-cli — the `kx auth` CLI
 
-The agent-facing auth CLI for the [KX MCP composition container](../../README.md). It ships the `kx`
+The agent-facing auth CLI for the [KX MCP composition container](https://github.com/KxSystems/kx-mcp-server-container). It ships the `kx`
 console script and the `auth` command group: `introspect` (validate a bearer), `login` (acquire one
 via the IdP your MCP server advertises), `exchange` (swap a token for a backend-scoped one), and
 `assert` (inspect or exercise the kdb+ identity-assertion handshake).
 
 It is distributed and run **where the agent/client runs, not the server** — so it depends only on the
-lean [`kx-auth-core`](../kx-auth-core/) (the one implementation of bearer validation + the outbound
+lean [`kx-auth-core`](https://github.com/KxSystems/kx-mcp-server-container/tree/main/packages/kx-auth-core) (the one implementation of bearer validation + the outbound
 token-exchange seam, shared with the container) plus `httpx`, and **never on `fastmcp`**. The
 client-side install stays light.
 
 > **Built for an agent.** Every subcommand supports `--json` (a structured envelope, never prose) and
-> a stable exit-code contract, so an agent branches on the code, not the text. Human-readable output
-> is the default; `--json` is the agent path.
+> a stable exit-code contract, so an agent can branch on the code without parsing text. Human-readable
+> output stays the default for a person at a terminal; add `--json` when something else is calling.
 
 ## Table of contents
 
@@ -61,8 +61,8 @@ Stable across every subcommand — branch on the code, not the text:
 ## `kx auth introspect`
 
 Validate a bearer against the **same keys the container enforces** (the shared `kx-auth-core`
-verifier). Stateless — it never touches the token cache. Token source (first found wins):
-`argument` → `$KX_AUTH_TOKEN` → stdin.
+verifier). It's stateless, so it never touches the token cache, and it takes its token from the
+first source found: `argument` → `$KX_AUTH_TOKEN` → stdin.
 
 ```bash
 # token + key as flags, structured verdict
@@ -206,8 +206,5 @@ This CLI runs client-side and must ship light, so it depends on `kx-auth-core` +
 
 ## Related docs
 
-The user-facing auth reference is the auth guide under `docs/` in the `kx-mcp-server-container`
-repository. The deeper design material is maintained in the project's internal design docs — the
-command-surface contract (mediation model, command set, cache, exit codes, workload bootstrap), the
-benchmark that fed the mediation-model decision, and the outbound token-exchange seam that `exchange`
-wraps.
+The user-facing auth reference is the [auth guide](https://github.com/KxSystems/kx-mcp-server-container/blob/main/docs/auth.md)
+in the [`kx-mcp-server-container`](https://github.com/KxSystems/kx-mcp-server-container) repository.

@@ -7,6 +7,8 @@ from jsonschema import Draft202012Validator
 from kx_mcp_kdbx.utils.aimeta import MetadataDetection
 from kx_mcp_kdbx.utils.metadata_model import (
     _META,
+    _META_BATCH,
+    MAX_PREVIEW_TABLES,
     _PREVIEW,
     _ROW_COUNTS,
     build_functions_document,
@@ -30,6 +32,9 @@ class _Tables:
         return _Value(self.names)
 
 
+_META_ROWS = [{"c": "sym", "t": "s", "f": "", "a": "g"}]
+
+
 class FakeConn:
     def __init__(self, names):
         self.names = names
@@ -43,7 +48,11 @@ class FakeConn:
         if query == ".Q.pt":
             return _Value([])
         if query == _META:
-            return _Value(json.dumps([{"c": "sym", "t": "s", "f": "", "a": "g"}]))
+            return _Value(json.dumps(_META_ROWS))
+        if query == _META_BATCH:
+            # Shape verified against real KDB-X: `{table: rows}`, and an unreadable table yields []
+            # (which the caller treats as a batch miss and re-reads individually).
+            return _Value(json.dumps({name: _META_ROWS for name in args[0]}))
         raise AssertionError(query)
 
 
@@ -137,6 +146,46 @@ def _validate_contract(document):
         files("kx_mcp_kdbx.schemas").joinpath("metadata-v1.schema.json").read_text()
     )
     Draft202012Validator(schema).validate(document)
+
+
+def test_round_trip_count_does_not_scale_linearly_with_table_count(mocker):
+    """REGRESSION (see mcp-container/adversarial-review-2026-08.md § kdb-x backend).
+
+    `columns_from_meta` and `_live_block`'s preview query were each a separate round-trip PER TABLE,
+    with nothing bounding the table count — roughly `4 + U + T` sequential qIPC calls, so a host with
+    500 tables meant ~1000 of them per uncached call. The meta leg is now batched into one call and
+    the preview leg is capped at MAX_PREVIEW_TABLES, which bounds the total outright."""
+
+    class _CountingConn(FakeConn):
+        def __init__(self, names):
+            super().__init__(names)
+            self.calls = 0
+
+        def __call__(self, query, *args):
+            self.calls += 1
+            return super().__call__(query, *args)
+
+    def _run(n):
+        names = [f"t{i}" for i in range(n)]
+        conn = _CountingConn(names)
+        mocker.patch("kx_mcp_kdbx.utils.metadata_model.get_kdb_connection", return_value=conn)
+        mocker.patch(
+            "kx_mcp_kdbx.utils.metadata_model.detect_metadata",
+            return_value=MetadataDetection(None, 1, "unavailable", "native"),
+        )
+        mocker.patch("kx_mcp_kdbx.utils.metadata_model._vector_columns", return_value=[])
+        build_tables_document(config=mocker.Mock(data_gate=False))
+        return conn.calls
+
+    small = _run(5)
+    large = _run(50)  # 10x the tables
+    assert large < small * 3, (small, large)  # must not scale ~10x with a 10x table count
+
+    # Bounded outright, not merely sublinear: the preview cap means the count stops growing once
+    # there are more tables than MAX_PREVIEW_TABLES, so 10x and 100x the tables cost the same.
+    ceiling = MAX_PREVIEW_TABLES + 10  # previews + the handful of fixed calls, with slack
+    assert large <= ceiling, (large, ceiling)
+    assert _run(500) == large, "past the preview cap, round-trip count must stop growing"
 
 
 def test_native_fallback_has_same_contract_and_live_shape(mocker):

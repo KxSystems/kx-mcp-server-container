@@ -1,9 +1,10 @@
 """Container inbound-auth configuration (the ``KX_MCP_AUTH`` family) — the shared config contract.
 
-The *mode* lives in the bare ``KX_MCP_AUTH`` env var (``unset`` / ``static`` / ``jwks`` / ``entra``;
-later ``proxy_headers`` — see the verifier seam in :mod:`kx_mcp_core.auth.providers`); the mode-specific
-detail lives under the ``KX_MCP_AUTH_*`` prefix. This is the container's config fragment — distinct
-from each extension's own prefix (``KDBX_DB_*``, ``KDBAI_DB_*``).
+The *mode* lives in the bare ``KX_MCP_AUTH`` env var (``unset`` / ``static`` / ``jwks`` /
+``oidc_proxy`` / ``entra``; later ``proxy_headers`` — see the verifier seam in
+:mod:`kx_mcp_core.auth.providers`); the mode-specific detail lives under the ``KX_MCP_AUTH_*``
+prefix. This is the container's config fragment — distinct from each extension's own prefix
+(``KDBX_DB_*``, ``KDBAI_DB_*``).
 
 This model lives in the lean ``kx-auth-core`` package (no fastmcp) so **both** the container and the
 client-side ``kx auth`` CLI bind to the *same* config: the CLI validates a bearer against the same
@@ -71,6 +72,20 @@ class AuthSettings(BaseSettings):
     # Application ID URI exposed by the app registration; defaults to api://{client_id} in Entra,
     # so leave unset unless you configured a custom one.
     identifier_uri: Optional[str] = None
+
+    # oidc_proxy (FastMCP's OIDCProxy — `entra` generalised to any OIDC issuer whose DCR is
+    # closed). Reuses `client_id`/`client_secret` (the one app you pre-register), `resource_url`
+    # (base_url), `audience`, `algorithm` and `required_scopes`.
+
+    # The discovery document. Derived as `{issuer}/.well-known/openid-configuration` when unset;
+    # set it for issuers that serve it elsewhere (Entra v2.0, some Auth0/Okta setups).
+    config_url: Optional[str] = None
+    # Signs container-issued tokens and keys the encrypted OAuth-state store. Unset → both are
+    # derived from `client_secret`. Required for a public/PKCE client with no secret.
+    jwt_signing_key: Optional[str] = None
+    # False accepts a discovery document missing an OIDC-required field (usually
+    # `subject_types_supported`).
+    oidc_strict: bool = True
 
     @field_validator("mode", mode="before")
     @classmethod

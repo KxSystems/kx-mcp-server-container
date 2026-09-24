@@ -74,11 +74,18 @@ class StaticCapabilityAdapter:
 
 
 def _as_groups(value: Any) -> list[str]:
-    """Normalise a groups claim: a list (Keycloak/Entra), a space-delimited string, or absent."""
+    """Normalise a groups claim: a list (Keycloak/Entra), a space-delimited string, or absent.
+
+    Non-string members are **dropped, not stringified**. ``str(g)`` used to turn a nested list or
+    object member into its Python repr (``"['nested']"``, ``"{'group': 'admin'}"``), and that repr
+    then entered the group-intersection set as a real group *name* — so a policy that happened to
+    grant that literal string would match a claim shape that names no group at all. A group is a
+    string or it is not a group.
+    """
     if value is None:
         return []
     if isinstance(value, str):
         return value.split()
     if isinstance(value, (list, tuple)):
-        return [str(g) for g in value]
+        return [g for g in value if isinstance(g, str)]
     return []

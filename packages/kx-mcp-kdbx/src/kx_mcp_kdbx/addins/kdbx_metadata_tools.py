@@ -7,6 +7,7 @@ from fastmcp import Context
 from fastmcp.tools import tool
 from pydantic import Field
 
+from kx_mcp_core import tool_result
 from kx_mcp_core.auth import authorize
 from kx_mcp_kdbx.utils.aimeta import reload_remote_metadata
 from kx_mcp_kdbx.utils.kdbx import (
@@ -22,7 +23,7 @@ from kx_mcp_kdbx.utils.metadata_model import (
 logger = logging.getLogger(__name__)
 
 
-async def kdbx_get_table_metadata_impl(
+def kdbx_get_table_metadata_impl(
     table: str, preview_rows: int = 3, config=None, cache=None
 ) -> Dict[str, Any]:
     try:
@@ -35,7 +36,7 @@ async def kdbx_get_table_metadata_impl(
 
 
 @authorize(action="admin", resource="kdbx.metadata")
-async def kdbx_refresh_metadata_impl(config=None, cache=None) -> Dict[str, Any]:
+def kdbx_refresh_metadata_impl(config=None, cache=None) -> Dict[str, Any]:
     try:
         conn = get_kdb_connection(config)
         remote_reload, detected = reload_remote_metadata(conn=conn, cache=cache)
@@ -58,7 +59,7 @@ async def kdbx_refresh_metadata_impl(config=None, cache=None) -> Dict[str, Any]:
         return {"status": "error", "message": str(error)}
 
 
-@tool
+@tool(annotations={"readOnlyHint": True})
 async def get_table_metadata(
     table: str,
     ctx: Context,
@@ -70,17 +71,25 @@ async def get_table_metadata(
     distinguishes real preview rows from illustrative annotation samples. Read
     `schema://kdbx/metadata/v1` for the complete response contract.
     """
-    return await kdbx_get_table_metadata_impl(
-        table,
-        preview_rows,
-        config=config_from_ctx(ctx),
-        cache=metadata_cache_from_ctx(ctx),
+    # tool_result marks a failed dispatch `isError: true` while keeping the payload — including a
+    # `permission_denied` metadata document — intact and schema-valid.
+    return tool_result(
+        kdbx_get_table_metadata_impl(
+            table,
+            preview_rows,
+            config=config_from_ctx(ctx),
+            cache=metadata_cache_from_ctx(ctx),
+        )
     )
 
 
-@tool
+@tool(
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True}
+)
 async def refresh_metadata(ctx: Context) -> Dict[str, Any]:
     """Administratively reload recompiled aimeta annotations without restarting the MCP server."""
-    return await kdbx_refresh_metadata_impl(
-        config=config_from_ctx(ctx), cache=metadata_cache_from_ctx(ctx)
+    return tool_result(
+        kdbx_refresh_metadata_impl(
+            config=config_from_ctx(ctx), cache=metadata_cache_from_ctx(ctx)
+        )
     )

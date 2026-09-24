@@ -34,6 +34,15 @@
         "service_accounts_enabled": true,
         "service_account_groups": ["service"],
         "audience_override": "kdbai-service"
+      },
+      "proxy_client": {
+        "client_id": "kx-mcp-proxy",
+        "public_client": false,
+        "secret": "kx-mcp-proxy-secret",
+        "standard_flow_enabled": true,
+        "direct_access_grants_enabled": false,
+        "redirect_uris": ["http://127.0.0.1:8765/auth/callback"],
+        "web_origins": ["http://127.0.0.1:8765"]
       }
     },
     "risk": {

@@ -104,6 +104,45 @@ def test_adapter_decision_passes_obligations_through():
     assert decision.obligations == obligations
 
 
+def test_decision_obligations_are_not_aliased_to_the_adapters_dict():
+    """`decide` hands the adapter's own AuthzDecision back via `replace(result, adapter=strategy)` —
+    a SHALLOW copy — so `decision.obligations` is the very dict object the adapter owns. `decide`
+    must return an independent snapshot; the post-append assertion forces the copy to be DEEP, since
+    a top-level `dict()` copy still shares `obligations["entitled"]`."""
+    shared = {"entitled": ["t1"]}
+    register_authz_adapter(
+        "test_obligation_aliasing", lambda req: AuthzDecision(allowed=True, obligations=shared)
+    )
+
+    decision = decide(_req(), strategy="test_obligation_aliasing")
+    assert decision.allowed is True
+    assert decision.obligations == {"entitled": ["t1"]}
+
+    shared["entitled"].append("t2")  # the adapter reuses / extends its cached payload
+    shared["injected"] = True
+
+    assert decision.obligations is not shared
+    assert decision.obligations == {"entitled": ["t1"]}
+
+
+def test_self_stamping_adapters_obligations_are_also_snapshotted():
+    """The aliasing fix must cover BOTH `decide()` return paths. An adapter that names itself skips
+    `replace(result, adapter=...)` entirely, so a fix applied only to the stamping path would leave
+    exactly this decision sharing the adapter's mapping — the harder half of the same bug, and the
+    one a `replace`-only fix silently misses."""
+    shared = {"entitled": ["t1"]}
+    register_authz_adapter(
+        "test_self_stamped_aliasing",
+        lambda req: AuthzDecision(allowed=True, adapter="i-name-myself", obligations=shared),
+    )
+
+    decision = decide(_req(), strategy="test_self_stamped_aliasing")
+    assert decision.adapter == "i-name-myself"  # self-stamp still respected
+
+    shared["entitled"].append("t2")
+    assert decision.obligations == {"entitled": ["t1"]}
+
+
 def test_adapter_decision_keeps_its_own_adapter_stamp():
     """If an adapter names itself (e.g. delegating to a sub-adapter), decide() does not overwrite it."""
 

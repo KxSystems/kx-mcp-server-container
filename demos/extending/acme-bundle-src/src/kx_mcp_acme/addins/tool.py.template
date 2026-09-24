@@ -7,6 +7,11 @@ directly. The module-level standalone `@tool` decorator (FastMCP 3.x) attaches d
 and returns the function unchanged; native filesystem discovery (the shared helper in kx-mcp-core)
 finds it and registers it onto the per-instance server. Read per-call config from the request
 Context (ctx.fastmcp, via config_from_ctx) — never a module global — to stay instance-safe.
+
+Failures return through `tool_result`, which marks the dispatch `isError: true` while keeping the
+payload. That is REQUIRED (docs/extending.md § Signalling failure): a payload that reports its own
+failure while the protocol reports success reaches the host as a success, and the container's metrics
+count it as one.
 """
 
 from __future__ import annotations
@@ -16,6 +21,8 @@ import logging
 from fastmcp import Context
 from fastmcp.tools import tool
 
+from kx_mcp_core import tool_result
+
 from ..settings import AcmeConfig
 from ..utils.acme import config_from_ctx, get_connection
 
@@ -23,16 +30,28 @@ logger = logging.getLogger(__name__)
 
 
 def my_tool_impl(param: str, config: AcmeConfig | None = None) -> dict:
-    """Your tool logic here. Takes an explicit config so tests can call it directly."""
+    """Your tool logic here. Takes an explicit config so tests can call it directly.
+
+    Returns a plain dict either way — the `*_impl` knows nothing about MCP result envelopes. On a
+    failure, say so in `status` and put a *recovery hint* in the message ("...; valid kinds are X, Y")
+    so an agent has a next step rather than a dead end.
+    """
     conn = get_connection(config or AcmeConfig())
     # A real backend queries `conn` here; the demo stub serves canned rows.
     logger.info("Processing my_tool request")
-    return conn.query(param)
+    if not conn.known(param):
+        return {"status": "error", "message": f"unknown kind {param!r}. Valid: {conn.kinds()}."}
+    return {"status": "success", **conn.query(param)}
 
 
 # Pick a descriptive, BARE tool name — the container supplies the `acme` qualifier at
 # mount(namespace="acme"). Discovery picks this up automatically; no registration function needed.
-@tool
+# `annotations` are a strong convention, not optional polish: they are behavioural hints a host
+# reads BEFORE invoking, and unset means the host assumes the worst and prompts for what may be a
+# plain read. readOnlyHint for a read, + idempotentHint if retrying is safe, destructiveHint
+# INSTEAD of readOnlyHint if your tool can lose or overwrite data.
+# See docs/extending.md § Tool annotations.
+@tool(annotations={"readOnlyHint": True})
 def my_tool(param: str, ctx: Context) -> dict:
     """One-line summary shown to the model, then a fuller description.
 
@@ -42,4 +61,13 @@ def my_tool(param: str, ctx: Context) -> dict:
     Returns:
         The tool result (FastMCP 3.x serializes a dict for you).
     """
-    return my_tool_impl(param, config=config_from_ctx(ctx))
+    # Keep the `-> dict` annotation above: FastMCP derives the advertised outputSchema from it, and
+    # tool_result's envelope is unwrapped before the client sees it.
+    return tool_result(my_tool_impl(param, config=config_from_ctx(ctx)))
+
+# Instrumenting the inside of a tool? The container already counts, times and spans every dispatch at
+# the boundary, so add to it only for what the boundary cannot see — and instrument the *_impl above,
+# not this wrapper. `from kx_mcp_core import span` for a child span,
+# `from kx_mcp_core.observability import Counter, metric` for a collector of your own; both are inert
+# when observability is off, and neither needs a dependency beyond kx-mcp-core.
+# See docs/extending.md § Observability for bundle authors.

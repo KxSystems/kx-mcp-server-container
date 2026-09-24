@@ -112,29 +112,63 @@ def _resolve_jwks_key(settings: AuthSettings, token: str) -> str:
     kid = _decode_header(token).get("kid")
     resp = httpx.get(settings.jwks_uri, timeout=10.0)
     resp.raise_for_status()
-    keys = {}
-    for key_data in resp.json().get("keys", []):
-        keys[key_data.get("kid") or "_default"] = _jwk_to_pem(key_data)
-    if kid:
-        if kid not in keys:
-            raise ValueError(f"key ID {kid!r} not found in JWKS")
-        return keys[kid]
-    if len(keys) == 1:
-        return next(iter(keys.values()))
-    if not keys:
+    # A LIST of (kid, pem) pairs, not a dict keyed on kid: two entries sharing a kid — or, the case
+    # that actually bit, two entries with NO kid at all, which both used to collapse onto one
+    # "_default" slot — silently reduced the key count, turning a genuine "multiple keys, no kid"
+    # ambiguity into a single-key selection whose outcome depended on the order the issuer happened
+    # to serve its JWKS in. Ambiguity must be an error, and the same error either way.
+    entries = [(key_data.get("kid"), _jwk_to_pem(key_data)) for key_data in resp.json().get("keys", [])]
+    if not entries:
         raise ValueError("no keys found in JWKS")
+    if kid:
+        matches = [pem for entry_kid, pem in entries if entry_kid == kid]
+        if not matches:
+            raise ValueError(f"key ID {kid!r} not found in JWKS")
+        if len(matches) > 1:
+            raise ValueError(f"multiple keys in JWKS share key ID (kid) {kid!r}")
+        return matches[0]
+    if len(entries) == 1:
+        return entries[0][1]
     raise ValueError("multiple keys in JWKS but no key ID (kid) in token")
 
 
-def _extract_scopes(claims: dict) -> list:
-    """Scopes from the standard ``scope`` claim, falling back to ``scp`` (mirrors FastMCP)."""
+def _extract_scopes(claims: dict) -> tuple[list, str]:
+    """Scopes from the standard ``scope`` claim, falling back to ``scp``. Mirrors FastMCP.
+
+    Returns ``(scopes, status)`` where status is one of:
+
+    * ``"ok"`` — a well-formed claim, or none at all.
+    * ``"invalid_members"`` — a **list**-valued claim carrying a non-string member. FastMCP's
+      ``JWTVerifier`` **rejects** this token outright (``AccessToken.scopes`` is typed
+      ``list[str]``), verified live against the pinned fastmcp, so the caller must too — anything
+      else and ``kx auth introspect`` would report a verdict the container does not enforce.
+      Rejecting also means an *unhashable* member never reaches the caller's ``set(scopes)``, which
+      is evaluated outside the try/except and used to escape as a bare ``TypeError``.
+    * ``"malformed_type"`` — the claim is present but is neither a string nor a list. ``JWTVerifier``
+      **accepts** this, treating it as no scope, so the token stays valid here as well; the status
+      exists only so the caller's reason can distinguish "carried a broken claim" from "carried no
+      claim", which used to read identically.
+
+    The ``scope`` → ``scp`` fall-through is preserved: a wrong-typed ``scope`` still lets a
+    well-formed ``scp`` win, it just remembers the first claim was broken.
+
+    Both verdicts are pinned by ``tests/deterministic/unit/test_auth_cli_contract.py``, which now
+    parametrizes the hostile shapes — it previously only fed well-formed claims, so this function
+    was free to drift from the verifier it is meant to mirror.
+    """
+    status = "ok"
     for claim in ("scope", "scp"):
-        value = claims.get(claim)
+        if claim not in claims:
+            continue
+        value = claims[claim]
         if isinstance(value, str):
-            return value.split()
+            return value.split(), status
         if isinstance(value, list):
-            return value
-    return []
+            if not all(isinstance(member, str) for member in value):
+                return [], "invalid_members"
+            return value, status
+        status = "malformed_type"
+    return [], status
 
 
 def _audience_ok(expected: Any, actual: Any) -> bool:
@@ -189,10 +223,18 @@ def verify_token(token: str, settings: AuthSettings) -> VerifyResult:
             DENIED, f"audience mismatch (got {claims.get('aud')!r}, expected {settings.audience!r})"
         )
 
-    scopes = _extract_scopes(claims)
+    scopes, scope_status = _extract_scopes(claims)
+    if scope_status == "invalid_members":
+        # Rejected, matching JWTVerifier. Categorised ERROR (a broken token, not a policy refusal)
+        # and named explicitly, so this is never confused with a legitimate scope shortfall.
+        return VerifyResult.fail(ERROR, "malformed scope claim: non-string member in a list-valued scope")
     if settings.required_scopes:
         missing = set(settings.required_scopes) - set(scopes)
         if missing:
-            return VerifyResult.fail(DENIED, f"missing required scopes: {sorted(missing)}")
+            # Name the malformed case: otherwise "missing required scopes" reads identically whether
+            # the token carried no scope at all or carried a broken one, and only the second is a
+            # bug to chase at the issuer.
+            detail = " (malformed scope claim)" if scope_status == "malformed_type" else ""
+            return VerifyResult.fail(DENIED, f"missing required scopes: {sorted(missing)}{detail}")
 
     return VerifyResult.ok(claims=claims, client_id=client_id, scopes=scopes)

@@ -6,14 +6,46 @@ that into a structured `permission_denied` envelope so the agent receives a clea
 rather than a raw stack trace — the graceful-degradation invariant (never crash the container; turn
 an authorization refusal into a clean signal). Shared so every kdb-x tool surfaces denials
 identically, the same way the connection-layer bind covers every tool.
+
+The envelopes here are *payloads*, not results: the caller wraps them so the dispatch carries
+`isError: true` (`kx_mcp_core.tool_result`, required — see `docs/extending.md` § Signalling
+failure), and `record_denial` stamps the authz decision so the refusal is counted `denied` rather
+than `error`.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Optional
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # typing only — keep this module import-light
     from kx_auth_core.authz import AuthzDecision
+
+
+def record_denial(reason: str, *, adapter: str = "kx_auth_qside") -> None:
+    """Stamp a deny decision with ``stamp_authz_decision`` so audit + metrics see the refusal.
+
+    A denial the tool *returns* (rather than raises) is invisible to the parent middleware unless
+    something records it: ``isError: true`` alone makes it an ``error``, which is honest but loses
+    the fact that it was an **authorization** outcome. The explicit data-gate consult
+    (``consult_data_gate``) already does this; this is the same stamp for the q-side ``'denied``
+    translation below, so all three refusal paths — the ``@authorize`` capability check, the
+    explicit consult, and a q-side ``require``/``authorize`` refusal surfaced as a ``QError`` —
+    land in ``outcome="denied"`` instead of two of them landing there and one reading as a success.
+
+    Best-effort by design: wrapped in ``try``/``ImportError`` for the standalone-bundle posture
+    (no container, so no audit middleware and no contextvar to stamp), exactly as
+    ``consult_data_gate`` does.
+    """
+    try:
+        from kx_auth_core.authz import AuthzDecision
+        from kx_mcp_core.auth import stamp_authz_decision
+
+        stamp_authz_decision(AuthzDecision(allowed=False, adapter=adapter, reason=reason))
+    except ImportError:  # standalone bundle posture — no container, no audit middleware
+        logger.debug("no container present; q-side denial not recorded for audit")
 
 
 def is_denial(exc: Exception) -> bool:
@@ -35,6 +67,9 @@ def denial_response(exc: Exception) -> Optional[dict[str, Any]]:
     """
     if is_denial(exc):
         msg = str(exc).strip()
+        # Record it as an authorization outcome before returning, so the dispatch is counted
+        # `denied` rather than `error` — see record_denial.
+        record_denial(msg)
         return {
             "status": "error",
             "error_type": "permission_denied",

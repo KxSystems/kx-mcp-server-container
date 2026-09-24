@@ -10,7 +10,9 @@
 #   demos/claude-code-live-kdbai-entra/run.sh   # start container + register
 #
 # Prerequisites (one-time):
-#   docker login registry.gitlab.com
+#   docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>   # bearer token from
+#   # portal.dl.kx.com -> username -> Token Management; see
+#   # https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image
 #   export KDB_LICENSE_B64=$(base64 ~/.kx/kc.lic)
 #   Provision Entra + .env.entra (see tests/deterministic/realidp/setup/entra/README.md):
 #     uv run tests/deterministic/realidp/setup/entra/entra_setup.py

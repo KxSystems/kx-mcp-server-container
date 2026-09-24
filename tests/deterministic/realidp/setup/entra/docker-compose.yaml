@@ -4,7 +4,7 @@
 # Unlike the Keycloak compose, there is NO local IdP service here — Entra is the
 # public IdP (login.microsoftonline.com), so this file only brings up the backend.
 #
-#   docker login registry.gitlab.com
+#   docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>   # see below
 #   mkdir -p kdbai-data acl-data && chmod 777 kdbai-data acl-data
 #   set -a; source ../../envs/.env.entra; set +a
 #   KDB_LICENSE_B64=$(base64 < ~/.kx/kc.lic) docker compose up -d
@@ -23,13 +23,18 @@
 #
 # Ports: 8081 = REST API (used by seed.py's external_token Session); 8082 = qipc
 # (used by the KA.* tests in qipc mode). Both are mapped so either path works.
+#
+# The kdbai-db image is registry-gated on portal.dl.kx.com — sign in there, generate a
+# bearer token under your username → Token Management, then:
+#   docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>
+# See https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image
 
 services:
   kdbai-db:
     # OAuth-enabled KDB.AI server (registry-gated image — requires docker login
-    # registry.gitlab.com and a kdb+ license in KDB_LICENSE_B64). Authenticates
+    # portal.dl.kx.com and a kdb+ license in KDB_LICENSE_B64). Authenticates
     # against the Entra tenant; the groups claim (Object IDs) drives ACL enforcement.
-    image: kdbai-db:latest
+    image: portal.dl.kx.com/kdbai-db:latest
     container_name: kdbai-db-entra
     environment:
       - KDB_LICENSE_B64=$KDB_LICENSE_B64

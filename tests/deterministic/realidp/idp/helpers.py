@@ -1,7 +1,7 @@
 """Assertion helpers for the real-IdP inbound-authentication tests (2.38–2.41).
 
-These helpers are provider-agnostic — they work against any IdP and any backend bundle,
-as long as the container is running with ``KX_MCP_AUTH=jwks``.
+These helpers are provider-agnostic — they work against any IdP and any backend bundle, as long
+as the container validates bearers (``KX_MCP_AUTH=jwks`` or ``oidc_proxy``).
 
 KA.* ACL helpers (kdbai-specific) live in ``realidp.kdbai.helpers``.
 """

@@ -1,9 +1,9 @@
 # Deploying the kx-mcp container
 
-How an operator stands up the KX MCP composition container in a real environment: what to install,
-what to point it at, how to secure it, and how to know it's healthy. Configuration of the auth
-seams themselves is in the [auth guide](auth.md); extending the container with a new backend is in
-the [extender guide](extending.md).
+How an operator stands up the KX MCP composition container in a real environment — what it takes to
+install, what to point it at, how to secure it, and how you'd know afterward that it's healthy.
+Configuration of the auth seams themselves is in the [auth guide](auth.md); extending the container
+with a new backend is in the [extender guide](extending.md).
 
 **What you're deploying.** One Python process — the container — which mounts the backend bundles
 you select (`kdbx`, `kdbai`) into a single MCP surface and serves it over streamable-HTTP
@@ -32,10 +32,8 @@ license.
 
 ### 2. From the published wheels (no checkout) — `uvx`
 
-> **PyPI carries a pre-release; the internal KX Nexus carries the finals.** `0.5.0b1` is on PyPI as a
-> PEP 440 pre-release — installable by anyone, no credentials — while the internal Nexus holds the
-> final releases (`0.4.0` and earlier, KX VPN + read-only credentials). Choose the index that matches
-> what you need; the commands are otherwise identical.
+> **PyPI carries a pre-release.** `0.5.0b1` is on PyPI as a PEP 440 pre-release — installable by
+> anyone, no credentials.
 
 `uvx` runs the container in an ephemeral environment from one command, straight from PyPI:
 
@@ -56,17 +54,6 @@ packages version in lockstep):
 uvx --from kx-mcp-core==0.5.0b1 --with kx-mcp-kdbx==0.5.0b1 kx-mcp --bundles kdbx
 ```
 
-**From the internal KX Nexus instead** — where the final releases live:
-
-```bash
-export UV_INDEX_KXI_NEXUS_USERNAME=<nexus-ro-user>
-export UV_INDEX_KXI_NEXUS_PASSWORD=<nexus-ro-password>
-
-uvx --index kxi-nexus=https://nexus.kxi-dev.kx.com/repository/kxi/simple \
-    --from kx-mcp-core --with kx-mcp-kdbx \
-    kx-mcp --bundles kdbx
-```
-
 ### 3. Assemble your own server (downstream repo)
 
 When you want your own repo that composes the container with your own glue or a private bundle,
@@ -85,11 +72,13 @@ index if/when one exists.
 | KDB.AI | `kx-mcp-kdbai` | `kdbai-client>=2.0.0`; no KDB license on the MCP host (the KDB.AI Server deployment owns its license) | A KDB.AI server: qipc default `127.0.0.1:8082`, REST default `127.0.0.1:8081` (`KDBAI_DB_MODE`) |
 
 Requirements fall into three categories. **Mount-time hard requirements** are checked by the eager
-pre-flight; a failure disables that bundle while the parent serves healthy bundles. **Feature
-gates** hide only affected tools (KDB-X `.ai`). **Call-time prerequisites** leave tools visible but
-return a useful error when data, tables, indexes, embeddings, or a passthrough caller's credentials
-are missing. KDB.AI static/service-account startup opens an SDK session; passthrough startup has no
-caller bearer and checks socket reachability only. Per-backend setup detail lives in:
+pre-flight, and a failure disables just that bundle while the parent keeps serving the healthy ones.
+**Feature gates** are narrower — they hide only the affected tools, as `.ai` does for KDB-X's
+similarity search. **Call-time prerequisites** are the loosest: the tool stays visible and only
+fails, with a useful error, when the data, tables, indexes, embeddings, or a passthrough caller's
+credentials it needs turn out to be missing. KDB.AI's static/service-account startup opens an SDK
+session; its passthrough startup has no caller bearer yet, so it only checks socket reachability.
+Per-backend setup detail lives in:
 [kdbx](../packages/kx-mcp-kdbx/README.md) · [kdbai](../packages/kx-mcp-kdbai/README.md).
 
 ## The production topology
@@ -108,7 +97,8 @@ A hardened deployment is three decisions, each detailed in the [auth guide](auth
 
 1. **Inbound**: `KX_MCP_AUTH=jwks` against your IdP, and `KX_MCP_AUTH_RESOURCE_URL` set to the
    public URL clients use — that single variable is what lets MCP clients discover the IdP and log
-   in themselves.
+   in themselves. If your IdP restricts dynamic client registration, use `oidc_proxy` instead and
+   let the container front the login.
 2. **Outbound, per backend**: `passthrough` where the backend enforces per-user ACLs off the same
    issuer; `service_account` where the backend authorizes the workload; `KDBX_DB_ASSERT_IDENTITY`
    for plain kdb+.
@@ -122,6 +112,28 @@ the *client-facing* URL, not the internal bind address. Backend-leg TLS: `KDBX_D
 `KDBAI_DB_QIPC_TLS` (both need `KX_SSL_CA_CERT_FILE` at the PyKX layer), `https` in
 `KDBAI_DB_REST_PROTOCOL` for the REST leg (`KDBAI_DB_SSL_VERIFY` governs the outbound OIDC
 token call, on by default).
+
+**Health probes.** The container serves `GET /health` → `200 OK` on the same port as `/mcp`, for
+every composition. It is **unauthenticated** — a kubelet presents no bearer, and a probe behind auth
+would restart a healthy pod in a loop. Pass `make_parent(..., health=False)` to opt out.
+
+It is a **liveness** probe: it reports that the process is serving HTTP, not that any backend is
+reachable, and a bundle whose pre-flight failed does not turn it red. **Do not wire it to a
+`readinessProbe`** — it is green whatever state the backends are in, so it would keep traffic
+routed to a pod that cannot serve. There is no readiness endpoint yet.
+
+```yaml
+livenessProbe:
+  httpGet: { path: /health, port: 8000 }
+  periodSeconds: 10
+```
+
+For a single-backend deployment set `KX_MCP_EXIT_ON_MOUNT_FAILURE=true` so a failed pre-flight
+terminates the process and the orchestrator retries with backoff; without it, a skipped bundle's
+tools stay absent until a restart while `/health` stays green. That is only as strong as the
+bundle's own pre-flight, which may treat any HTTP response as reachable — a started process does not
+by itself prove a *usable* backend. Use the startup log or an MCP `tools/list` to see which backends
+came up.
 
 **Secrets.** Prefer file-backed secrets where offered (`KDBX_DB_PASSWORD_FILE` wins over
 `KDBX_DB_PASSWORD` — mountable as a K8s/Docker secret); client secrets ride in env vars — keep them
@@ -140,6 +152,8 @@ Container serving (`KX_MCP_*`, read by the `kx-mcp` launcher):
 | `KX_MCP_NAME` | `kx-mcp` | Server instance name |
 | `KX_MCP_LOG_LEVEL` | `INFO` | The container's own logs (audit line, mount warnings) |
 | `KX_MCP_EXIT_ON_MOUNT_FAILURE` | `false` | Terminate instead of serving without a backend whose pre-flight failed (see below) |
+| `KX_MCP_MOUNT_TIMEOUT` | `0` (off) | Seconds to wait for each backend's startup before serving without it (see below) |
+| `KX_MCP_METRICS` / `KX_MCP_TRACING` | _(off)_ | Opt-in Prometheus metrics + OpenTelemetry tracing — see the [observability guide](observability.md) |
 
 **Mount-failure posture.** By default a backend whose eager pre-flight fails is disabled with a
 `WARNING` and the container keeps serving the backends that came up — the right behaviour when you
@@ -147,6 +161,19 @@ mount several, since one unreachable database shouldn't take the others down. Se
 `KX_MCP_EXIT_ON_MOUNT_FAILURE=true` (or pass `--exit-on-mount-failure`) to make the process exit
 non-zero instead, so an orchestrator restarts it and the misconfiguration surfaces as a crash loop
 rather than a warning line. Recommended when you run **one backend per container**.
+
+**Startup timeout (`KX_MCP_MOUNT_TIMEOUT`, `--mount-timeout`).** Backends mount sequentially, so a
+backend that accepts the connection but never answers would otherwise wedge startup indefinitely —
+and every backend requested after it never mounts either. Setting this bounds the wait: the container
+gives up on that backend and serves the rest.
+
+Prefer a **backend-level** timeout where one exists (`KDBX_DB_TIMEOUT` for kdb-x) — that is the
+supported way, and it is why this is off by default. A synchronous startup call cannot be cancelled,
+so this option stops the container *waiting* but cannot stop the work: the startup thread is
+**abandoned**, and keeps any connection it opened until the process exits. The log line says so when
+it happens. A backend given up on this way stays given up on — it can never appear later once its
+startup finally completes. Use it as a backstop for a backend you cannot configure, not as the
+primary mechanism.
 
 Independently of that flag, requesting bundles and mounting **none** of them always exits non-zero:
 a parent with no backends serves no tools, so staying alive would only present a healthy-looking
@@ -169,13 +196,20 @@ Auth variables (`KX_MCP_AUTH*`, `KX_MCP_AUTHZ*`, outbound strategies): the
 
 ## Verifying a deployment
 
-1. **Startup log**: every mounted bundle's pre-flight lines read `SUCCESS`; the FastMCP banner
+1. **Liveness**: `curl -f http://<host>:<port>/health` → `200 OK` — no credentials needed even
+   with inbound auth on. It proves the process is serving HTTP; steps 2–3 tell you a backend came up.
+2. **Startup log**: every mounted bundle's pre-flight lines read `SUCCESS`; the FastMCP banner
    shows your transport/URL.
-2. **Handshake**: point any MCP client at `http://<host>:<port>/mcp` and list tools — you should
+3. **Handshake**: point any MCP client at `http://<host>:<port>/mcp` and list tools — you should
    see the namespaced surface (`kdbx_run_sql_query`, `kdbai_list_tables`, …).
-3. **Auth path** (when inbound auth is on): `kx auth login --server <url>` completes discovery + login, an
+4. **Auth path** (when inbound auth is on): `kx auth login --server <url>` completes discovery + login, an
    authenticated call succeeds, and an unauthenticated one gets a clean `401` — each dispatch
-   emitting one `kx_mcp.audit` line (`subject / action / target / outcome`).
+   emitting one `kx_mcp.audit` line (`subject / action / target / outcome`). `subject` is the token's
+   `sub` claim, falling back to its client id and then to `anonymous` — the *same* derivation the
+   `@authorize` capability check decides on, so the line always names the identity the decision was
+   about. (Before this it recorded only the client id, so on any user token — where `sub` is the
+   human and the client id is the app — the record named the app while the decision was about the
+   human.)
 
 ## Troubleshooting
 
@@ -189,6 +223,5 @@ Auth variables (`KX_MCP_AUTH*`, `KX_MCP_AUTHZ*`, outbound strategies): the
 | First KDB.AI passthrough call fails | Startup checked socket reachability only; verify the caller bearer is accepted by KDB.AI and its principal has the required ACL. |
 | qIPC connect *times out* on macOS at `:5000` | AirPlay owns `:5000` on macOS and swallows connections — this is why the kdb-x default is `:5010`. Don't deploy a backend on `:5000` on a Mac. |
 | `401` on every authed call / client can't log in | Work the inbound checklist in the [auth guide](auth.md#troubleshooting) — issuer/audience mismatch and a missing/wrong `KX_MCP_AUTH_RESOURCE_URL` cover most cases. |
-| `uvx` fails resolving `kx-mcp-core` (401) | Wrong/missing Nexus credentials — set `UV_INDEX_KXI_NEXUS_{USERNAME,PASSWORD}` (read-only pair) or a `.netrc` entry. |
 | `uvx`/`uv` reports no solution for `kx-mcp-core`, hinting a pre-release is available | PyPI currently holds only the `0.5.0b1` pre-release and pre-releases are disabled in that context — pass `--prerelease=allow` or pin the exact version (`kx-mcp-core==0.5.0b1`). |
 | Audit lines don't appear | You're embedding `make_parent` in custom glue without calling `configure_logging()` — the launcher does this for you; custom entry points must too. |

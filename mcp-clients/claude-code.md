@@ -40,8 +40,8 @@ claude mcp add --transport http kx-mcp http://127.0.0.1:8000/mcp
 ```
 
 On first use, `/mcp` triggers Claude Code's built-in OAuth: it reads the `401`'s `resource_metadata`
-pointer, fetches the metadata, runs a browser flow **directly against the IdP**, and stores +
-auto-refreshes the token — no header to manage.
+pointer, fetches the metadata, runs a browser flow **directly against the IdP**, and stores and
+auto-refreshes the token. You never manage a header yourself.
 
 If the IdP issues tokens whose `aud` doesn't match the server's `KX_MCP_AUTH_AUDIENCE`, pin the client
 that does: `claude mcp add --transport http kx-mcp http://127.0.0.1:8000/mcp --client-id <client>`.

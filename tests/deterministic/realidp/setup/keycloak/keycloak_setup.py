@@ -181,7 +181,14 @@ def get_client_uuid(tadmin: KeycloakAdmin, realm: str, client_id: str) -> str:
 
 
 def ensure_client(tadmin: KeycloakAdmin, realm: str, client_cfg: Dict[str, Any], logs: LogBuffer) -> str:
-    """Create or skip the client. Returns the client's internal UUID."""
+    """Create or skip the client. Returns the client's internal UUID.
+
+    Create-or-skip is deliberate for most fields (nothing here should get silently rewritten out
+    from under a developer's manual tweak) — but a client whose config declares port-exact
+    ``redirect_uris`` or a fixed ``secret`` needs those to actually match reality, or the flow that
+    depends on them dies several hops downstream with no hint that provisioning is stale. See
+    ``reconcile_client_config``.
+    """
     client_id = client_cfg["client_id"]
     public_client = bool(client_cfg.get("public_client", False))
 
@@ -190,8 +197,11 @@ def ensure_client(tadmin: KeycloakAdmin, realm: str, client_cfg: Dict[str, Any],
         "enabled": True,
         "protocol": "openid-connect",
         "publicClient": public_client,
-        "directAccessGrantsEnabled": True,   # needed for password-grant token minting in tests
-        "standardFlowEnabled": True,
+        # Defaults preserve existing behaviour for kdbai-service / kdbai-service-worker; a client
+        # that exists only to front an authorization-code flow (e.g. the oidc_proxy lane's
+        # kx-mcp-proxy) opts out of the password grant so the code flow is the only way through it.
+        "directAccessGrantsEnabled": bool(client_cfg.get("direct_access_grants_enabled", True)),
+        "standardFlowEnabled": bool(client_cfg.get("standard_flow_enabled", True)),
         # off unless the config opts in — a machine/workload identity for the client_credentials
         # grant (service_account outbound strategy), distinct from the human password-grant clients.
         "serviceAccountsEnabled": bool(client_cfg.get("service_accounts_enabled", False)),
@@ -202,9 +212,20 @@ def ensure_client(tadmin: KeycloakAdmin, realm: str, client_cfg: Dict[str, Any],
     if not public_client:
         rep["secret"] = client_cfg.get("secret")
 
+    # Redirect URIs were never provisioned here because no client needed one before the
+    # oidc_proxy lane's kx-mcp-proxy. Keycloak matches this EXACTLY against
+    # {KX_MCP_AUTH_RESOURCE_URL}/auth/callback.
+    redirect_uris = list(client_cfg.get("redirect_uris") or [])
+    web_origins = list(client_cfg.get("web_origins") or [])
+    if redirect_uris:
+        rep["redirectUris"] = redirect_uris
+    if web_origins:
+        rep["webOrigins"] = web_origins
+
     cuuid = get_client_uuid(tadmin, realm, client_id)
     if cuuid:
         logs.log(f"[create] Client already exists in {realm}: {client_id}")
+        reconcile_client_config(tadmin, realm, cuuid, client_id, client_cfg, logs)
         return cuuid
 
     tadmin.create_client(rep)
@@ -214,6 +235,54 @@ def ensure_client(tadmin: KeycloakAdmin, realm: str, client_cfg: Dict[str, Any],
     if not cuuid:
         raise RuntimeError(f"Could not resolve client UUID for clientId={client_id} in realm={realm}")
     return cuuid
+
+
+def reconcile_client_config(
+    tadmin: KeycloakAdmin, realm: str, client_uuid: str, client_id: str, client_cfg: Dict[str, Any], logs: LogBuffer
+) -> None:
+    """Declared-config-wins for the fields an *existing* client's correctness depends on.
+
+    ``ensure_client`` is otherwise create-or-skip, which is fine for anything that isn't checked
+    byte-exact somewhere downstream. Two fields are: a ``redirect_uris``-bearing client's redirect
+    URI must equal ``{KX_MCP_AUTH_RESOURCE_URL}/auth/callback`` exactly, or Keycloak answers the
+    upstream authorize hop with "Invalid parameter: redirect_uri"; and a confidential client's
+    ``secret`` must equal ``KX_MCP_AUTH_CLIENT_SECRET`` exactly, or the container's server-side
+    upstream token exchange fails with ``unauthorized_client`` at ``/auth/callback`` — a failure
+    that manual verification of the oidc_proxy realidp lane actually hit (regenerating the secret
+    in the Keycloak console left it out of sync with the provisioned value, and the provisioner had
+    reported nothing but "already exists" on the next run). Neither failure looks like a
+    provisioning problem, so this function exists specifically so re-running the provisioner is
+    enough to fix both rather than requiring a manual client deletion.
+
+    Only PUTs when something configured actually differs — a client with none of these fields
+    declared is never rewritten.
+    """
+    redirect_uris = list(client_cfg.get("redirect_uris") or [])
+    web_origins = list(client_cfg.get("web_origins") or [])
+    secret = client_cfg.get("secret") if not client_cfg.get("public_client", False) else None
+
+    if not (redirect_uris or web_origins or secret):
+        return
+
+    path = f"admin/realms/{realm}/clients/{client_uuid}"
+    rep = raw_get_json(tadmin, path)
+    changed = False
+
+    if redirect_uris and sorted(rep.get("redirectUris") or []) != sorted(redirect_uris):
+        rep["redirectUris"] = redirect_uris
+        changed = True
+    if web_origins and sorted(rep.get("webOrigins") or []) != sorted(web_origins):
+        rep["webOrigins"] = web_origins
+        changed = True
+    if secret and rep.get("secret") != secret:
+        rep["secret"] = secret
+        changed = True
+
+    if changed:
+        raw_put_json(tadmin, path, rep)
+        logs.log(f"[config] {realm}: {client_id} reconciled to declared config (redirectUris/webOrigins/secret)")
+    else:
+        logs.log(f"[config] {realm}: {client_id} already matches declared config")
 
 
 def get_service_account_user_id(tadmin: KeycloakAdmin, realm: str, client_uuid: str) -> str:
@@ -571,6 +640,18 @@ def setup_tenant(cfg: Dict[str, Any], tenant: str, tenant_cfg: Dict[str, Any], c
             if g not in group_ids:
                 group_ids[g] = ensure_group(tadmin, g, logs)
             add_user_to_group(tadmin, service_uid, group_ids[g], g, logs)
+
+    # Confidential client backing KX_MCP_AUTH=oidc_proxy: the ONE pre-registered app the container
+    # brokers every login through (standard flow only — no password grant, so this client can only
+    # be reached via a real authorization-code flow). No ensure_extra_audience_mapper: the
+    # realm-default `kdbai-resource-audience` scope from ensure_kdbai_audience_default_scope already
+    # stamps aud=kdbai-service on every client in the realm, which is exactly the audience the
+    # proxy's JWTVerifier checks on the UPSTREAM Keycloak token. No DCR-policy work either — DCR for
+    # this mode happens at the container, never at Keycloak.
+    proxy_client_cfg = tenant_cfg.get("proxy_client")
+    if proxy_client_cfg:
+        proxy_client_uuid = ensure_client(tadmin, tenant, proxy_client_cfg, logs)
+        ensure_groups_tenant_aud_mappers(tadmin, tenant, proxy_client_uuid, proxy_client_cfg["client_id"], logs)
 
     users = tadmin.get_users()
     logs.log(f"[debug] realm={tenant} users_count={len(users)} sample={[x.get('username') for x in users[:10]]}")

@@ -24,6 +24,7 @@ import pykx as kx
 from kx_auth_core.authz import AuthzDecision, AuthzRequest, register_authz_adapter
 
 from kx_mcp_kdbx.utils.denial import is_denial
+from kx_mcp_kdbx.utils.observe import q, record_authz
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def rbac_check(conn: kx.QConnection, action: str, resource: str):
     ``action`` and ``resource`` are sent as q symbols (``kx.SymbolAtom``) so the policy can compare
     them directly; a symbol carries a dot (e.g. ``kdbx.sql``) unchanged.
     """
-    return conn(".kx.auth.authorize", kx.SymbolAtom(action), kx.SymbolAtom(resource))
+    return q(conn, "authorize", ".kx.auth.authorize", kx.SymbolAtom(action), kx.SymbolAtom(resource))
 
 
 def _resolve_bound_conn() -> kx.QConnection:
@@ -77,8 +78,10 @@ def kdbx_rbac_adapter(request: AuthzRequest) -> Union[bool, AuthzDecision]:
         rbac_check(conn, request.action, request.resource)
     except Exception as exc:
         if is_denial(exc):
+            record_authz("kdbx_rbac", request.action, "deny")
             return AuthzDecision(allowed=False, reason=str(exc).strip())
         raise  # not a policy deny — let decide() fail closed (infrastructure error)
+    record_authz("kdbx_rbac", request.action, "allow")
     return True
 
 

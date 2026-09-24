@@ -175,12 +175,34 @@ def _spawn_kdbx_container(spawn_container, data_gate_host, keypair, *, data_gate
 
 
 def _call(url: str, token: str, tool: str, args: dict):
+    """Call a tool over the wire and return its structured payload.
+
+    ``raise_on_error=False`` because a failed dispatch now carries ``isError: true`` (the tool-result
+    contract — ``docs/extending.md`` § Signalling failure) and fastmcp's Client raises on that by
+    default. These tests are *about* the denial payloads, so they need the result, not an exception.
+
+    The flag is asserted here rather than in each test: every failure payload this file produces
+    must also be flagged at the protocol level, so routing all four personas through one check makes
+    this file the over-the-wire proof of the contract for the whole data-gate path.
+    """
+
     async def go():
         async with Client(StreamableHttpTransport(url, auth=token)) as client:
-            return (await client.call_tool(tool, args)).data
+            return await client.call_tool(tool, args, raise_on_error=False)
 
-    result = asyncio.run(go())
+    outcome = asyncio.run(go())
+    # `.data` is fastmcp's deserialized convenience accessor and it is NOT populated on an
+    # error-flagged result — `.structured_content` is. So read that first, or every assertion below
+    # would run against None the moment a payload is correctly flagged as a failure.
+    result = outcome.structured_content if outcome.is_error else outcome.data
     _skip_on_embedded_license_contention(result)
+    if isinstance(result, dict) and result.get("status") in ("error", "permission_denied"):
+        assert outcome.is_error is True, (
+            f"{tool} returned {result.get('status')!r} without isError: true — "
+            "a failure that reads as a success to the host and to the metrics counter"
+        )
+    else:
+        assert outcome.is_error is False
     return result
 
 
@@ -239,6 +261,32 @@ def test_none_entitled_persona_denied_on_secrets(data_gate_host, keypair, mint, 
     # scope-down-only fields (see test 3). The refused table is named in the message/reason instead.
     assert "denied_tables" not in result
     assert "secrets" in result["message"]
+
+
+def test_none_entitled_persona_denied_on_secrets_however_it_is_cased(
+    data_gate_host, keypair, mint, spawn_container
+):
+    """REGRESSION (CRITICAL — see mcp-container/adversarial-review-2026-08.md).
+
+    The same denial as the test above, with the table name RE-CASED. `derive_tables` matched
+    case-sensitively while the SQL interface resolves identifiers case-insensitively, so `SECRETS`
+    derived no tables at all, the tool concluded "no tables referenced" and skipped
+    `consult_data_gate` entirely, and `.s.e` then resolved `secrets` and returned it — bob, entitled
+    to nothing, received the full confidential table with `status: success`.
+
+    This host deliberately does NOT wrap `.s.e` (that is the other, ferry-host pattern), which is
+    what makes it the right shape to pin: in this deployment the container-side consult is the only
+    gate, so a false negative in the derivation fails OPEN with nothing behind it. Every pre-existing
+    case in this file used the table name in its stored case, which is why the gap survived.
+    """
+    url, _ = _spawn_kdbx_container(spawn_container, data_gate_host, keypair, data_gate=True)
+    token = mint(client_id="bob")  # no `trader` group -> entitled to nothing
+
+    for query in ("SELECT * FROM SECRETS", "select * from Secrets", "SELECT * FROM sEcReTs"):
+        result = _call(url, token, "kdbx_run_sql_query", {"query": query})
+        assert result["status"] == "error", (query, result)
+        assert result["error_type"] == "permission_denied", (query, result)
+        assert "secrets" in result["message"], (query, result)
 
 
 # --- 3. partial-entitled: scope-down guidance on the SQL tool, filtered listing on the resource ---

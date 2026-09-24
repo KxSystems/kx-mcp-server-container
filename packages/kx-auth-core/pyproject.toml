@@ -15,6 +15,11 @@ dependencies = [
     "pydantic-settings>=2.14.2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/KxSystems/kx-mcp-server-container"
+Repository = "https://github.com/KxSystems/kx-mcp-server-container"
+Changelog = "https://github.com/KxSystems/kx-mcp-server-container/blob/main/CHANGELOG.md"
+
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"

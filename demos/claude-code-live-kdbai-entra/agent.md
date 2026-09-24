@@ -58,9 +58,9 @@ Claude Code navigated the agentic auth chain against a real enterprise IdP with 
 5. Container forwarded the bearer to KDB.AI (`passthrough`) — KDB.AI granted access on alice's
    `tid=<ENTRA_TENANT_ID>`, `groups=[quants-trader OID, quants-viewer OID]` claims.
 
-No pre-injected token. No ROPC. No hardcoded credentials in the client config — the container's
-`AzureProvider` is the only thing standing between Claude Code and a real interactive Entra
-login.
+There's no pre-injected token, no ROPC, and no hardcoded credential in the client config. The
+container's `AzureProvider` is the only thing standing between Claude Code and a real interactive
+Entra login.
 
 The deterministic backstop for the ACL result (including the alice-vs-bob denial contrast) is
 the committed `tests/deterministic/realidp/kdbai/test_kdbai_acl.py` suite (KA.1–KA.7), which

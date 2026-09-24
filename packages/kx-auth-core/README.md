@@ -28,6 +28,7 @@ where the agent/client runs), and `verify_token` must stay in agreement with the
 
 ## Documentation
 
-Full reference in the `kx-mcp-server-container` repository: the auth guide under `docs/` (inbound
-modes, outbound strategies, authorization) and the design specs (token-exchange, identity-assertion,
-authorization). All workspace packages version in lockstep from release tags.
+Full reference in the [`kx-mcp-server-container`](https://github.com/KxSystems/kx-mcp-server-container)
+repository: the [auth guide](https://github.com/KxSystems/kx-mcp-server-container/blob/main/docs/auth.md)
+(inbound modes, outbound strategies, authorization) and the design specs (token-exchange,
+identity-assertion, authorization). All workspace packages version in lockstep from release tags.

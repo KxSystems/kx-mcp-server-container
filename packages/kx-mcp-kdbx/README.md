@@ -1,6 +1,6 @@
 # kx-mcp-kdbx — KDB-X backend
 
-The KDB-X backend extension (bundle) for the [KX MCP composition container](../../README.md). It
+The KDB-X backend extension (bundle) for the [KX MCP composition container](https://github.com/KxSystems/kx-mcp-server-container). It
 exposes SQL query, schema-discovery, and vector/hybrid-search capability over qIPC via
 [PyKX](https://code.kx.com/pykx/), and is packaged as a standard container bundle: a package exposing
 `build_server() -> FastMCP`, mounted under the `kdbx` namespace.
@@ -60,11 +60,11 @@ bundle has no standalone server of its own — `build_server()` just returns a c
   qIPC connect *times out* — hence `:5010`).
 - **[UV](https://docs.astral.sh/uv/getting-started/installation/)** to run the server.
 
-The license, qIPC reachability, and initialized `.s` interface are mount-time hard requirements: a
-failure disables the `kdbx` bundle while the parent continues serving healthy bundles. `.ai` is a
-feature gate—without it the bundle mounts but omits its search tools. Embedding/model configuration
-is a call-time prerequisite for those search tools. The sample hosts in `examples/` demonstrate a
-complete setup; they are not runtime dependencies.
+The license, qIPC reachability, and initialized `.s` interface are mount-time hard requirements — a
+failure disables the `kdbx` bundle while the parent keeps serving healthy ones. `.ai` is different:
+it's a feature gate, so without it the bundle still mounts but omits its search tools, and
+embedding/model configuration only becomes a prerequisite once those tools are actually called. The
+sample hosts in `examples/` demonstrate a complete setup, but they aren't a runtime dependency.
 
 ## KDB-X setup
 
@@ -82,7 +82,7 @@ q -p 5010
 The SQL module uses a special compatibility integration: the installer places `s.k_` on the q
 runtime path, preserving `.s.init[]` instead of requiring the normal module-framework load syntax.
 
-A ready-made host for smoke testing lives at [examples/host.q](../../examples/host.q) (loads `.s` +
+A ready-made host for smoke testing lives at [examples/host.q](https://github.com/KxSystems/kx-mcp-server-container/blob/main/examples/host.q) (loads `.s` +
 `.ai`, seeds annotated `instruments` and `trades` tables, listens on `:5010`):
 
 ```bash
@@ -153,10 +153,10 @@ concern — they belong to the container (`KX_MCP_*`), since the backend is moun
 Resolution order: env vars > `.env` file > defaults.
 
 These defaults are a local-development posture: loopback, plaintext qIPC, empty connection
-credentials, identity assertion off, and data/capability gates off. With assertion off the
-username/password identify the single backend connection. With assertion on they identify the
-trusted service account permitted to assert callers. The built-in Python `static` capability
-adapter is independent of `kx.auth`; only `KX_MCP_AUTHZ=kdbx_rbac` and
+credentials, identity assertion off, and data/capability gates off. With assertion off, the
+username/password simply identify the single backend connection; switch it on and they instead
+identify the trusted service account permitted to assert callers. The built-in Python `static`
+capability adapter is independent of `kx.auth` — only `KX_MCP_AUTHZ=kdbx_rbac` and
 `KDBX_DB_DATA_GATE=true` require the q authorization module and an asserted principal.
 
 **TLS.** Enable with `KDBX_DB_TLS=true`. This requires your KDB-X database to be
@@ -168,17 +168,18 @@ point `KX_SSL_CA_CERT_FILE` at the CA cert; for local development you can bypass
 
 In the multi-principal posture, the container can propagate the **validated inbound principal** to
 plain kdb+ so q-side permission functions can gate on *who is calling*. qIPC has no bearer concept, so
-identity is **asserted**, not exchanged: the container **ferries** the structured fields + raw claims,
-connects as a trusted **service account**, and calls `.kx.auth.bind[principal]`; q's `.kx.auth.promote`
-then extracts `groups`/`tenant` and types the principal. No JWT, no crypto, no OAuth in q. Promotion is
-q-side so the qIPC and HTTP paths share it. See the [auth guide](../../docs/auth.md) § plain kdb-x
+identity is **asserted**, not exchanged: the container **ferries** the structured fields plus raw
+claims, connects as a trusted **service account**, and calls `.kx.auth.bind[principal]` — none of it
+touches a JWT, crypto, or OAuth in q. q's `.kx.auth.promote` then extracts `groups`/`tenant` and types
+the principal, and because promotion lives q-side, the qIPC and HTTP paths share it. See the
+[auth guide](https://github.com/KxSystems/kx-mcp-server-container/blob/main/docs/auth.md) § plain kdb-x
 for the full walkthrough.
 
 **Enable it:** set `KDBX_DB_ASSERT_IDENTITY=true` (default off). Off behaves exactly as the
 single-principal posture (no bind), so a vanilla kdb+ is unaffected. When on:
 
 1. **Load the `kx.auth` KDB-X module** on your KDB-X process. It's a `use`-loaded module
-   ([`modules/kx/auth/`](../../modules/kx/auth/)); install it onto the q module path once with
+   ([`modules/kx/auth/`](https://github.com/KxSystems/kx-mcp-server-container/tree/main/modules/kx/auth)); install it onto the q module path once with
    `just install-modules` (symlinks it into `~/.kx/mod/kx/auth`), then on the host:
    ```q
    .kx.auth:use`kx.auth;                                       / MUST bind to the global `.kx.auth`
@@ -194,7 +195,7 @@ single-principal posture (no bind), so a vanilla kdb+ is unaffected. When on:
    to point promotion at the right claim path (default search `groups`→`realm_access.roles`→`roles`).
    `bind` itself consults that same policy — the connecting login needs an `` `assert `` grant on
    `` `kx.identity `` or every assertion is refused (see the
-   [module README](../../modules/kx/auth/README.md)).
+   [module README](https://github.com/KxSystems/kx-mcp-server-container/blob/main/modules/kx/auth/README.md)).
    The eager pre-flight verifies `.kx.auth.bind` is defined and disables this bundle if not.
 2. **Configure one credential source on each side.** On the MCP side, set
    `KDBX_DB_USERNAME` plus either `KDBX_DB_PASSWORD` or `KDBX_DB_PASSWORD_FILE` (the file wins; a

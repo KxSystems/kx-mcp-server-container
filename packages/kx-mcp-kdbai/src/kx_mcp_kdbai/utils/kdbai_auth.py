@@ -20,6 +20,7 @@ OAuth KDB.AI is still pending** (registry-gated bring-up — see the bundle READ
 """
 
 import asyncio
+import contextvars
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -29,12 +30,15 @@ from typing import Optional
 from kx_auth_core import OutboundConfig, exchange
 
 from kx_mcp_kdbai.settings import KDBAIConfig
+from kx_mcp_kdbai.utils.observe import token_mint
 
 logger = logging.getLogger(__name__)
 
 # Refresh this many seconds before the token actually expires, to avoid edge-of-expiry races
 # (kept local to the bundle's connection lifecycle).
 _EXPIRY_BUFFER_SECONDS = 60
+# Fallback lifetime when the endpoint reports none, or reports one the cache cannot honour.
+_DEFAULT_EXPIRES_IN = 3600
 
 
 def _now() -> float:
@@ -46,16 +50,24 @@ def _run_coro(coro):
 
     The KDB.AI connection path (:func:`get_kdbai_client`) is sync but is reached from inside async tool
     handlers — i.e. a running event loop — where ``asyncio.run`` would raise. When a loop is already
-    running we execute the coroutine on a throwaway loop in a worker thread; ``service_account`` reads
-    no request-context contextvars, so the thread hop is safe. Outside any loop (standalone server,
-    tests) we just ``asyncio.run`` in place.
+    running we execute the coroutine on a throwaway loop in a worker thread. Outside any loop
+    (standalone server, tests) we just ``asyncio.run`` in place.
+
+    **The thread hop is what makes the explicit context copy below necessary.**
+    ``ThreadPoolExecutor.submit`` starts its callable in a *fresh* context, unlike
+    ``asyncio.to_thread`` / ``asyncio.create_task``, which propagate the caller's. Left alone, the
+    span ``TracingMiddleware`` opened for the dispatch would not be visible past this call, and the
+    token mint would export as its own disconnected root trace rather than a child of the tool's
+    dispatch span — silently, with no error or warning. ``contextvars.copy_context().run`` carries
+    the caller's context across the hop, so the mint span nests where it belongs. General rule +
+    this file as the worked example: ``docs/extending.md`` § Observability for bundle authors.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
     with ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(asyncio.run, coro).result()
+        return executor.submit(contextvars.copy_context().run, asyncio.run, coro).result()
 
 
 def _service_account_config(config: KDBAIConfig) -> OutboundConfig:
@@ -100,14 +112,29 @@ class ServiceAccountTokenManager:
             )
         logger.info("Requesting KDB.AI access token via client credentials from %s", cfg.token_url)
         try:
-            cred = _run_coro(exchange(_service_account_config(cfg)))
+            with token_mint():
+                cred = _run_coro(exchange(_service_account_config(cfg)))
         except Exception as exc:
             raise RuntimeError(
                 f"Token request failed ({exc}). "
                 "Check KDBAI_DB_CLIENT_ID / KDBAI_DB_CLIENT_SECRET and KDBAI_DB_TOKEN_URL."
             ) from exc
         self._token = cred.access_token
-        expires_in = cred.expires_in if cred.expires_in is not None else 3600
+        expires_in = cred.expires_in if cred.expires_in is not None else _DEFAULT_EXPIRES_IN
+        # A non-positive (or absurdly short) lifetime makes the freshness check
+        # `_now() < expiry - buffer` unsatisfiable, so the token is never served from cache and every
+        # single call re-mints — a misconfigured or hostile token endpoint turns the container into a
+        # loop hammering that endpoint. Clamp to the default and say so, rather than obey it.
+        if expires_in <= _EXPIRY_BUFFER_SECONDS:
+            logger.warning(
+                "Token endpoint reported expires_in=%s, at or below the %ss freshness buffer — the "
+                "token could never be cached and every call would re-mint. Treating it as %ss; "
+                "check the IdP's token lifetime configuration.",
+                expires_in,
+                _EXPIRY_BUFFER_SECONDS,
+                _DEFAULT_EXPIRES_IN,
+            )
+            expires_in = _DEFAULT_EXPIRES_IN
         self._expiry = _now() + float(expires_in)
         logger.info("KDB.AI access token obtained (valid for %ss).", expires_in)
         return self._token

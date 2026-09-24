@@ -41,9 +41,32 @@ class TestDeriveTables:
     def test_ignores_keywords_and_unknown_identifiers(self):
         assert ent.derive_tables("SELECT sym FROM trades WHERE size > 10", ["trades"]) == ["trades"]
 
-    def test_case_sensitive_exact_match(self):
-        # q table names are case-sensitive; TRADES is not the trades table.
-        assert ent.derive_tables("SELECT * FROM TRADES", ["trades"]) == []
+    def test_a_recased_table_name_still_derives_the_table(self):
+        """REGRESSION (CRITICAL — a real data leak; see mcp-container/adversarial-review-2026-08.md).
+
+        This used to assert the opposite, on the reasoning that q table names are case-sensitive so
+        `TRADES` is not the `trades` table. True of q *naming* — and irrelevant, because the query
+        does not go to q by name, it goes to the SQL interface, which resolves identifiers
+        case-insensitively. Deriving nothing meant the SQL tool concluded "no tables referenced" and
+        skipped `consult_data_gate` entirely; `.s.e` then resolved the table anyway and returned it.
+        Reproduced live against a real container with `KDBX_DB_DATA_GATE=true`: a principal entitled
+        to nothing queried `SELECT * FROM SECRETS` and got the whole confidential table back with
+        `status: success`. The gate must agree with the dialect that resolves the name.
+        """
+        assert ent.derive_tables("SELECT * FROM TRADES", ["trades"]) == ["trades"]
+        assert ent.derive_tables("SELECT * FROM SeCrEtS", ["secrets"]) == ["secrets"]
+        assert ent.derive_tables("select * from Trades t", ["trades"]) == ["trades"]
+
+    def test_the_canonical_q_name_is_returned_not_the_queried_casing(self):
+        """The derived set is consulted against q as `data.<table>` symbols, so it must carry the
+        canonical name — echoing back the query's casing would ask q about a table it has no grant
+        for and deny a legitimately-entitled caller."""
+        assert ent.derive_tables("SELECT * FROM TRADES", ["trades"]) == ["trades"]
+
+    def test_tables_differing_only_by_case_are_both_consulted(self):
+        """If a host really does have `trades` and `TRADES`, the dialect could mean either, so both
+        canonical names go to the gate. Consulting a superset narrows; guessing one could leak."""
+        assert ent.derive_tables("SELECT * FROM Trades", ["trades", "TRADES"]) == ["TRADES", "trades"]
 
     def test_no_known_table_referenced_derives_nothing(self):
         assert ent.derive_tables("SELECT 1+1", ["trades", "accounts"]) == []

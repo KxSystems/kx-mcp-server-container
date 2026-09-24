@@ -91,3 +91,27 @@ def test_try_mount_all_backends_down_yields_a_bare_but_live_parent():
     assert try_mount_bundle(parent, _exits, namespace="a") is False
     assert try_mount_bundle(parent, _raises, namespace="b") is False
     assert _tool_names(parent) == set()
+
+
+def test_mount_rejects_a_non_fastmcp_return_value():
+    """REGRESSION (see mcp-container/adversarial-review-2026-08.md § container/assembly seam).
+
+    Neither mount_bundle nor try_mount_bundle validates that build_server() actually returned
+    a FastMCP instance — a broken bundle returning None "mounts successfully" and only fails
+    later, deep inside fastmcp internals, on first actual use."""
+    parent = make_parent("test")
+    assert try_mount_bundle(parent, lambda: None, namespace="bad") is False
+
+
+def test_duplicate_namespace_mount_does_not_silently_duplicate_tools():
+    """REGRESSION (see mcp-container/adversarial-review-2026-08.md § container/assembly seam).
+
+    Mounting two bundles under the SAME namespace succeeds silently today (both calls return
+    True) — list_tools() then returns duplicated tool names instead of a clear startup error at
+    the point of the second mount."""
+    parent = make_parent("test")
+    assert try_mount_bundle(parent, example, namespace="dup") is True
+    try_mount_bundle(parent, example, namespace="dup")
+
+    names = [t.name for t in asyncio.run(parent.list_tools())]
+    assert len(names) == len(set(names)), f"duplicate tool names: {names}"

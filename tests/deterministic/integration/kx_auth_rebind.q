@@ -1,4 +1,4 @@
-/ Regression for kx.auth's per-handle principal REPLACEMENT semantics (KXI-72739).
+/ Regression for kx.auth's per-handle principal REPLACEMENT semantics.
 / .
 / bind[] must replace a handle's principal WHOLESALE. It previously stored principals as the values of
 / a dict, and a dict whose values are conforming dicts IS a keyed table to q — so the store-join became

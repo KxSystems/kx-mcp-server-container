@@ -12,7 +12,7 @@ class TestTableDeepDivePromptImpl:
     async def test_prompt_generation_success(self):
         """Test successful prompt generation."""
         # Act
-        result = await table_deep_dive_prompt_impl("test_table", "statistical", 100)
+        result = table_deep_dive_prompt_impl("test_table", "statistical", 100)
 
         # Assert
         assert isinstance(result, str)

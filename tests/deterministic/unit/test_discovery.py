@@ -9,6 +9,8 @@ a synthetic temp directory (backend-agnostic — the helper is shared by kdb-x a
      imported and never registered.
 """
 
+import importlib
+
 import pytest
 from fastmcp import FastMCP
 
@@ -93,6 +95,14 @@ def test_two_sibling_addins_packages_do_not_collide(tmp_path):
             "    '''doc'''\n"
             "    return x\n",
         )
+        # This package is created *after* an earlier import has already scanned (and cached) a
+        # FileFinder for tmp_path, so the new sibling stays invisible to the import system until
+        # that cache is dropped — the import then fails with a bare `No module named 'bundleb'`.
+        # Whether it bites depends on the filesystem's mtime granularity: fine-grained timestamps
+        # (APFS) hide it, coarser ones (some CI overlay filesystems) expose it — which is why this
+        # passed locally and failed intermittently in CI. invalidate_caches() is the documented
+        # remedy when modules are created during a run.
+        importlib.invalidate_caches()
         return addins
 
     a = register_components(FastMCP("a"), make_bundle("bundlea"))

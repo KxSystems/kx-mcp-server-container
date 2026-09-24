@@ -17,7 +17,7 @@ from kx_mcp_kdbx.utils.metadata_model import (
 logger = logging.getLogger(__name__)
 
 
-async def kdbx_functions_impl(
+def kdbx_functions_impl(
     function: str | None = None, config=None, cache=None
 ) -> List[TextContent]:
     try:
@@ -34,7 +34,7 @@ async def kdbx_functions_impl(
 async def kdbx_functions(ctx: Context) -> str:
     """All public q functions documented by aimeta, including signatures, examples, and table uses."""
     return (
-        await kdbx_functions_impl(
+        kdbx_functions_impl(
             config=config_from_ctx(ctx), cache=metadata_cache_from_ctx(ctx)
         )
     )[0].text
@@ -44,7 +44,7 @@ async def kdbx_functions(ctx: Context) -> str:
 async def kdbx_function(function: str, ctx: Context) -> str:
     """One public q function's metadata; prefer this lookup when its qualified name is known."""
     return (
-        await kdbx_functions_impl(
+        kdbx_functions_impl(
             function, config=config_from_ctx(ctx), cache=metadata_cache_from_ctx(ctx)
         )
     )[0].text

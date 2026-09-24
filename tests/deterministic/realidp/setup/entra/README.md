@@ -175,7 +175,10 @@ collapses to the standard container (the conftest fixture handles this automatic
 
 ```bash
 # 0. (one-time) provision the tenant — see "Quick start" above (entra_setup.py)
-docker login registry.gitlab.com
+# kdbai-db is registry-gated on portal.dl.kx.com — sign in there, generate a bearer token
+# under your username → Token Management, then log in with it (see
+# https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image):
+docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>
 
 # 1. Bring up kdbai-db trusting Entra (no local IdP service)
 cd tests/deterministic/realidp/setup/entra

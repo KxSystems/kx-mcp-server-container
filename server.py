@@ -23,17 +23,37 @@ Inbound auth is resolved from KX_MCP_AUTH and passed to the parent, guarding eve
 it defaults to off (the single-principal bundling posture). The subject/action/resource authorization
 seam and outbound identity propagation are deferred control-plane slots that attach in kx-mcp-core
 (make_parent).
+
+Observability rides the same seam: KX_MCP_METRICS / KX_MCP_TRACING (both off by default) attach the
+metrics + tracing middleware on the parent, so every mounted backend is observed. See
+docs/observability.md.
 """
 
-from kx_mcp_core import build_auth_provider, configure_logging, make_parent, try_mount_bundle
+from kx_mcp_core import (
+    ObservabilitySettings,
+    build_auth_provider,
+    configure_logging,
+    make_parent,
+    mount_metrics_route,
+    try_mount_bundle,
+)
 from kx_mcp_kdbx import build_server as kdbx
 from kx_mcp_kdbai import build_server as kdbai
 
+TRANSPORT = "streamable-http"
+
 configure_logging()  # surface the audit line + mount warnings (same config as the kx-mcp launcher)
 
-app = make_parent("kx-mcp", auth=build_auth_provider())  # KX_MCP_AUTH: unset (default) / static / jwks
+obs = ObservabilitySettings()  # KX_MCP_METRICS / KX_MCP_TRACING — both default off
+app = make_parent(  # KX_MCP_AUTH: unset (default) / static / jwks
+    "kx-mcp", auth=build_auth_provider(), observability=obs
+)
 try_mount_bundle(app, kdbx, namespace="kdbx")  # -> kdbx_run_sql_query, kdbx_similarity_search, ...
 try_mount_bundle(app, kdbai, namespace="kdbai")  # -> kdbai_* tools/prompts/resources
 
+# The /metrics scrape route depends on the transport, so it is mounted here rather than in
+# make_parent; a no-op unless KX_MCP_METRICS is on, and a warning-and-skip under stdio.
+mount_metrics_route(app, obs, TRANSPORT)
+
 if __name__ == "__main__":
-    app.run(transport="streamable-http", host="0.0.0.0", port=8000)
+    app.run(transport=TRANSPORT, host="0.0.0.0", port=8000)

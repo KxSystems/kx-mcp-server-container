@@ -1,4 +1,5 @@
 import logging
+import re
 import pykx as kx
 import json
 from typing import Dict, Any
@@ -8,10 +9,102 @@ from kx_mcp_kdbx.utils import kdbx as kdbx_utils
 from kx_mcp_kdbx.utils.kdbx import get_kdb_connection, config_from_ctx
 from kx_mcp_kdbx.utils.denial import denial_response, denial_from_decision
 from kx_mcp_kdbx.utils.authz_kx_entitlements import consult_data_gate, derive_tables
+from kx_mcp_kdbx.utils.observe import q, record_sql_result
+from kx_mcp_core import tool_result
 from kx_mcp_core.auth import authorize
 
 logger = logging.getLogger(__name__)
 MAX_ROWS_RETURNED = 1000
+
+# --- the coarse write guard --------------------------------------------------------------------
+#
+# Not authorization — the S/A/R seam is that. This is the no-regression floor inherited from the
+# standalone server, kept as defence in depth in front of it.
+#
+# It used to be dead code. The check read `if keyword in query_upper and not
+# query_upper.startswith('SELECT')`, so the `startswith` test — evaluated against the WHOLE query,
+# once per keyword — short-circuited every keyword the moment a query began with SELECT. Since q's
+# SQL interface accepts `;`-chained statements, `SELECT * FROM trades; DROP TABLE trades` sailed
+# straight through and actually dropped the table (reproduced live against a real q process).
+#
+# Two changes, and they are load-bearing together. Chained statements are now rejected outright,
+# which is what actually closes the bypass. And the keyword scan matches on WORD BOUNDARIES over a
+# literal-stripped statement, which is what makes removing the `startswith` exemption safe: that
+# exemption was the only thing preventing mass false positives, because a bare substring test reads
+# `CREATE` inside a perfectly ordinary column named `created_at`.
+_DANGEROUS_KEYWORDS = ('INSERT', 'DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'CREATE')
+
+_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
+
+# q's `.j.j` renders +/-infinity as the bare tokens `inf` / `-inf`, which are NOT valid JSON, so
+# `json.loads` fails with a generic parse error that gives no hint the real cause is a non-finite
+# float rather than a malformed query. (A null float `0n` is fine — `.j.j` emits a proper JSON null.)
+_NON_FINITE_JSON = re.compile(rb"(?<![\w.])-?(?:inf|infinity|nan)(?![\w.])", re.IGNORECASE)
+
+
+def _strip_literals(query: str) -> str:
+    """Blank out single-quoted literals so the guard reads SQL syntax, not user data.
+
+    Keeps `SELECT 'INSERT successful' AS message` legal — a keyword inside a string is data.
+    """
+    return _STRING_LITERAL.sub("''", query)
+
+
+def _statements(query: str) -> list:
+    """Split on `;` *outside* string literals; drop empty fragments (so a trailing `;` is fine).
+
+    Hand-rolled rather than `query.split(';')` because a semicolon inside a literal
+    (`WHERE note = 'a;b'`) is not a statement separator, and splitting on it would reject a
+    legitimate query. `''` is SQL's escape for a quote inside a literal.
+    """
+    parts: list = []
+    buf: list = []
+    in_literal = False
+    i = 0
+    while i < len(query):
+        char = query[i]
+        if in_literal:
+            if char == "'":
+                if query[i + 1:i + 2] == "'":  # doubled quote — an escaped quote, still inside
+                    buf.append("''")
+                    i += 2
+                    continue
+                in_literal = False
+            buf.append(char)
+        elif char == "'":
+            in_literal = True
+            buf.append(char)
+        elif char == ';':
+            parts.append(''.join(buf))
+            buf = []
+        else:
+            buf.append(char)
+        i += 1
+    parts.append(''.join(buf))
+    return [stripped for stripped in (part.strip() for part in parts) if stripped]
+
+
+def check_write_guard(query: str) -> None:
+    """Raise ``ValueError`` unless ``query`` is a single statement with no write keyword.
+
+    Separate from ``run_query_impl`` so the guard is directly unit-testable: the e2e proof of the
+    bypass needs a real q process and therefore self-skips wherever no `q` binary exists — which
+    includes every CI image — so the CI-visible coverage of this guard has to be at this level.
+    """
+    statements = _statements(query)
+    if not statements:
+        raise ValueError("Query is empty")
+    if len(statements) > 1:
+        raise ValueError(
+            f"Query must be a single statement (found {len(statements)}); "
+            "`;`-chained statements are not accepted"
+        )
+    statement_upper = _strip_literals(statements[0]).upper()
+    for keyword in _DANGEROUS_KEYWORDS:
+        if re.search(rf"\b{keyword}\b", statement_upper):
+            raise ValueError(f"Query contains dangerous keyword: {keyword}")
+
+
 
 # Capability check: the @authorize decorator runs inside the tool's own context, reads the inbound
 # principal, and consults the configured authz strategy (KX_MCP_AUTHZ) over an MCP-semantic
@@ -21,14 +114,9 @@ MAX_ROWS_RETURNED = 1000
 # AuthorizationDenied (a clean tool error) — distinct from the data-layer denial below, which the
 # except-clause maps to a structured permission_denied.
 @authorize(action="query", resource="kdbx.sql")
-async def run_query_impl(sqlSelectQuery: str, config=None) -> Dict[str, Any]:
+def run_query_impl(sqlSelectQuery: str, config=None) -> Dict[str, Any]:
     try:
-        dangerous_keywords = ['INSERT', 'DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'CREATE']
-        query_upper = sqlSelectQuery.upper().strip()
-
-        for keyword in dangerous_keywords:
-            if keyword in query_upper and not query_upper.startswith('SELECT'):
-                raise ValueError(f"Query contains dangerous keyword: {keyword}")
+        check_write_guard(sqlSelectQuery)
 
         conn = get_kdb_connection(config)
 
@@ -40,7 +128,7 @@ async def run_query_impl(sqlSelectQuery: str, config=None) -> Dict[str, Any]:
         # scope — the agent re-scopes and re-issues. Full allow → run unchanged.
         cfg = config if config is not None else kdbx_utils.db_config
         if getattr(cfg, "data_gate", False):
-            known_tables = [str(t) for t in conn('tables[]').py()]
+            known_tables = [str(t) for t in q(conn, "tables", 'tables[]').py()]
             referenced = derive_tables(sqlSelectQuery, known_tables)
             if referenced:
                 decision = consult_data_gate("read", referenced)
@@ -49,12 +137,30 @@ async def run_query_impl(sqlSelectQuery: str, config=None) -> Dict[str, Any]:
                     return denial_from_decision(decision)
 
         # below query gets kdbx table data back as json for correct conversion of different datatypes
-        result = conn('{r:.s.e x;`rowCount`data!(count r;.j.j y sublist r)}', kx.CharVector(sqlSelectQuery), MAX_ROWS_RETURNED)
+        result = q(conn, "sql", '{r:.s.e x;`rowCount`data!(count r;.j.j y sublist r)}', kx.CharVector(sqlSelectQuery), MAX_ROWS_RETURNED)
         total = int(result['rowCount'])
+        record_sql_result(total, MAX_ROWS_RETURNED)
         if 0==total:
             return {"status": "success", "data": [], "message": "No rows returned"}
         # parse json result
-        rows = json.loads(result['data'].py().decode('utf-8'))
+        payload = result['data'].py()
+        try:
+            rows = json.loads(payload.decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError) as parse_error:
+            if isinstance(payload, bytes) and _NON_FINITE_JSON.search(payload):
+                logger.error("Query result contains non-finite floats; .j.j emitted invalid JSON")
+                return {
+                    "status": "error",
+                    "error_type": "non_finite_number",
+                    "message": (
+                        "The query succeeded but its result contains non-finite floating-point "
+                        "values (infinity or NaN), which cannot be represented in JSON. Filter or "
+                        "cast those values in the query — e.g. exclude rows where the column is "
+                        "infinite, or coerce them to null."
+                    ),
+                    "technical_details": str(parse_error),
+                }
+            raise
         if total > MAX_ROWS_RETURNED:
             logger.info(f"Table has {total} rows. Query returned truncated data to {MAX_ROWS_RETURNED} rows.")
             return {
@@ -89,7 +195,7 @@ async def run_query_impl(sqlSelectQuery: str, config=None) -> Dict[str, Any]:
 # mount(namespace="kdbx"), so the composed tool is `kdbx_run_sql_query` (not double-prefixed).
 # The @authorize capability check lives on the separate run_query_impl (below), not stacked on
 # this wrapper, so there is no decorator-ordering concern.
-@tool
+@tool(annotations={"readOnlyHint": True})
 async def run_sql_query(query: str, ctx: Context) -> Dict[str, Any]:
     """
     Execute a SQL query and return structured results only to be used on kdb and not on kdbai.
@@ -117,4 +223,7 @@ async def run_sql_query(query: str, ctx: Context) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Query execution results.
     """
-    return await run_query_impl(sqlSelectQuery=query, config=config_from_ctx(ctx))
+    # tool_result marks a failed dispatch `isError: true` while keeping the structured payload
+    # (required — see docs/extending.md § Signalling failure). The *_impl keeps returning a plain
+    # dict, so tests and the response contract are unchanged.
+    return tool_result(run_query_impl(sqlSelectQuery=query, config=config_from_ctx(ctx)))

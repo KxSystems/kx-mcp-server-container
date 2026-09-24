@@ -106,7 +106,9 @@ test-kdbx:
 
 # run kdbai OAuth ACL tests against a local OAuth kdbai-db + Keycloak (manual, not in CI)
 # Prerequisites:
-#   1. docker login registry.gitlab.com
+#   1. docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>  (bearer token from
+#      portal.dl.kx.com -> username -> Token Management; see
+#      https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image)
 #   2. mkdir -p tests/deterministic/realidp/setup/keycloak/kdbai-data tests/deterministic/realidp/setup/keycloak/acl-data && chmod 777 tests/deterministic/realidp/setup/keycloak/kdbai-data tests/deterministic/realidp/setup/keycloak/acl-data
 #   3. KDB_LICENSE_B64=$(base64 < ~/.kx/kc.lic) docker compose -f tests/deterministic/realidp/setup/keycloak/docker-compose.yaml --profile backends up -d
 #   4. uv run python tests/deterministic/realidp/setup/keycloak/keycloak_setup.py tests/deterministic/realidp/setup/keycloak/keycloak_config.json
@@ -120,7 +122,9 @@ test-kdbai:
 # run the kdbai OAuth ACL tests against a live OAuth kdbai-db trusting Microsoft Entra ID
 # (manual, not in CI). alice/bob get different ACL results purely off the Entra-propagated tid/groups.
 # Prerequisites (Entra provisioned via entra_setup.py — see setup/entra/README.md):
-#   1. docker login registry.gitlab.com
+#   1. docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>  (bearer token from
+#      portal.dl.kx.com -> username -> Token Management; see
+#      https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image)
 #   2. mkdir -p tests/deterministic/realidp/setup/entra/kdbai-data tests/deterministic/realidp/setup/entra/acl-data && chmod 777 tests/deterministic/realidp/setup/entra/{kdbai-data,acl-data}
 #   3. set -a; source tests/deterministic/realidp/envs/.env.entra; set +a
 #      KDB_LICENSE_B64=$(base64 < ~/.kx/kc.lic) docker compose -f tests/deterministic/realidp/setup/entra/docker-compose.yaml up -d

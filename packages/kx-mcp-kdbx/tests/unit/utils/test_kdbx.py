@@ -2,7 +2,13 @@
 
 import logging
 import pytest
-from kx_mcp_kdbx.utils.kdbx import get_kdb_connection, kdb_sync_connection, cleanup_kdb_connection
+from kx_mcp_kdbx.utils.kdbx import (
+    MalformedPrincipal,
+    cleanup_kdb_connection,
+    get_kdb_connection,
+    kdb_sync_connection,
+)
+from kx_mcp_kdbx.utils.denial import is_denial
 from kx_mcp_kdbx.settings import KDBConfig
 from pydantic import SecretStr
 
@@ -145,6 +151,31 @@ class TestKdbSyncConnection:
         # Assert
         assert result == mock_conn
         assert "Connecting to KDB at default_host:6000" in caplog.text
+
+    def test_evicted_connections_are_closed(self, mocker):
+        """REGRESSION (see mcp-container/adversarial-review-2026-08.md § kdb-x backend).
+
+        kdb_sync_connection's @lru_cache(maxsize=128) has no eviction hook — the 129th distinct
+        config evicts the oldest cached connection from the CACHE, but nothing calls .close() on
+        it, leaking the underlying qIPC socket until GC happens to reclaim the object."""
+        cleanup_kdb_connection()
+        created = []
+
+        def _new_conn(*a, **k):
+            m = mocker.Mock()
+            created.append(m)
+            return m
+
+        mock_kx = mocker.patch("kx_mcp_kdbx.utils.kdbx.kx")
+        mock_kx.SyncQConnection.side_effect = _new_conn
+
+        for i in range(129):
+            cfg = KDBConfig(host="localhost", port=5000, username=f"u{i}", password=SecretStr("pw"))
+            kdb_sync_connection(cfg, None)
+
+        assert kdb_sync_connection.cache_info().currsize == 128
+        created[0].close.assert_called_once()
+        cleanup_kdb_connection()
 
 
 class _FakePrincipal:
@@ -300,6 +331,70 @@ class TestIdentityAssertion:
         wire = [c for c in mock_conn.call_args_list if c.args and c.args[0] == ".kx.auth.bind"][0].args[1]
         # the `sub` claim value (a string) is wrapped as a CharVector, not left as a Python str
         assert isinstance(wire["claims"]["sub"], kx.CharVector)
+
+    def test_deeply_nested_claims_does_not_let_a_raw_recursion_error_escape(self, mocker):
+        """REGRESSION (see mcp-container/adversarial-review-2026-08.md § kdb-x backend).
+
+        _charvec recurses with no depth guard. get_kdb_connection/_bind_principal must not let a
+        raw RecursionError escape on a pathologically deep claims value — the tool-level broad
+        excepts that currently absorb this are incidental, not a guarantee this function itself
+        makes."""
+        cfg = KDBConfig(assert_identity=True, username="svc", password="pw")
+        mock_conn = mocker.Mock()
+        mocker.patch("kx_mcp_kdbx.utils.kdbx.kdb_sync_connection", return_value=mock_conn)
+
+        deep = {}
+        node = deep
+        for _ in range(3000):
+            node["nested"] = {}
+            node = node["nested"]
+
+        class _DeepPrincipal(_FakePrincipal):
+            claims = {"sub": "alice", "deep": deep}
+
+        mocker.patch("kx_mcp_kdbx.utils.kdbx._current_principal", return_value=_DeepPrincipal())
+
+        with pytest.raises(MalformedPrincipal) as exc:
+            get_kdb_connection(cfg)
+        # A denial, not an infra fault: the message carries q's `denied:` prefix, so denial.py maps
+        # it to the same structured permission_denied a q-side refusal produces. Asserted rather
+        # than a bare `except Exception`, which would also have swallowed a typo in this test.
+        assert str(exc.value).startswith("denied:")
+        assert is_denial(exc.value)
+
+    @pytest.mark.parametrize("bad_sub", [12345, 12.5, {"nested": "object"}, ["a", "b"], True])
+    def test_a_non_string_sub_claim_is_refused_as_a_denial_not_bound_silently(self, mocker, bad_sub):
+        """REGRESSION (see mcp-container/adversarial-review-2026-08.md § kdb-x backend).
+
+        Nothing type-checked `sub`. A JSON-number `sub` ferried to q without complaint and only bit
+        the first policy check that compared it against a symbol — a raw q `'type` error, which
+        `is_denial` correctly does NOT treat as a denial, so the tool fell through to a bare
+        `{"status": "error"}` with no `error_type`: an infrastructure-shaped error for what is
+        actually a malformed token. A dict/list `sub` failed even earlier and more obscurely, as
+        `TypeError: unhashable type` from the connection cache key.
+
+        Refused Python-side rather than in q on purpose: `public/modules/kx/auth/` is frozen here and
+        canonical in the `kx-auth` repo, so hardening `promote` belongs there (recorded as an ask).
+        """
+        cfg = KDBConfig(assert_identity=True, username="svc", password="pw")
+        sync = mocker.patch("kx_mcp_kdbx.utils.kdbx.kdb_sync_connection")
+
+        class _BadSubPrincipal(_FakePrincipal):
+            # `subject = None` mirrors production: fastmcp's JWTVerifier leaves AccessToken.subject
+            # unset, so the `sub` CLAIM is what the ferry actually reads. Leaving the fixture's
+            # string `subject` in place would shadow the malformed claim and the test would pass
+            # while proving nothing.
+            subject = None
+            claims = {"sub": bad_sub, "iss": "https://issuer.test"}
+
+        mocker.patch("kx_mcp_kdbx.utils.kdbx._current_principal", return_value=_BadSubPrincipal())
+
+        with pytest.raises(MalformedPrincipal) as exc:
+            get_kdb_connection(cfg)
+        assert is_denial(exc.value)
+        assert "sub" in str(exc.value)
+        # Rejected BEFORE the cache key is built, so no connection is opened or cached for it.
+        sync.assert_not_called()
 
 
 class TestKDBConfigM4:

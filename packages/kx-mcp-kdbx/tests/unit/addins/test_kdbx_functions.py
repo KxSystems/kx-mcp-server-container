@@ -12,7 +12,7 @@ async def test_single_function_lookup_is_token_efficient(mocker):
         return_value={"status": "success", "functions": [{"name": ".analytics.vwap"}]},
     )
 
-    result = await kdbx_functions_impl(
+    result = kdbx_functions_impl(
         ".analytics.vwap", config="config", cache="cache"
     )
 

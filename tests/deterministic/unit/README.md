@@ -23,7 +23,8 @@ with no external dependencies (no license, no running server, no IdP).
 
 None. No PyKX license, no running server, no IdP.
 
-Fixtures come from the repo-root `conftest.py` (shared crypto: `keypair`, `mint`, `jwks_uri`) and
+Fixtures come from the repo-root `conftest.py` (shared crypto: `keypair`, `mint`, `jwks_uri`,
+`oidc_issuer`) and
 `tests/conftest.py` (`spawn_container` — not used here, but available). The `kx_mcp_example`
 fixture bundle is resolved via the `tests/deterministic` pythonpath entry in `pyproject.toml`.
 

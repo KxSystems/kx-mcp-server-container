@@ -7,6 +7,8 @@ from collections import Counter
 from functools import lru_cache
 from abc import ABC, abstractmethod
 
+from kx_mcp_kdbx.utils.observe import embedding
+
 logger = logging.getLogger(__name__)
 
 # ---- Base Embedding Provider Interface ----
@@ -53,12 +55,35 @@ def register_provider(name: str):
         return cls
     return wrapper
 
+class _ObservedProvider(EmbeddingProvider):
+    """Times a provider's embed calls so callers need no instrumentation of their own.
+
+    An embed may be a remote API call, and it is the least visible leg of a vector search — timing
+    it here keeps it separate from the kdb-x search round-trip instead of folded into it.
+    """
+
+    def __init__(self, inner: EmbeddingProvider, provider: str):
+        self._inner = inner
+        self._provider = provider
+
+    async def dense_embed(self, text: str, model_name: str) -> list[float]:
+        with embedding(self._provider, "dense"):
+            return await self._inner.dense_embed(text, model_name)
+
+    async def sparse_embed(self, text: str, model_name: str) -> Dict[str, int]:
+        with embedding(self._provider, "sparse"):
+            return await self._inner.sparse_embed(text, model_name)
+
+    def cleanup_embedding_model(self):
+        return self._inner.cleanup_embedding_model()
+
+
 # ---- Provider Factory ----
 def get_provider(name: str) -> EmbeddingProvider:
     cls = PROVIDER_REGISTRY.get(name)
     if not cls:
         raise ValueError(f"Unknown provider: {name}")
-    return cls()
+    return _ObservedProvider(cls(), name)
 
 
 #----------------------------------------------------------------------#

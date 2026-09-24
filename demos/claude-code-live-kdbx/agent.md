@@ -50,8 +50,8 @@ asserted identity:
 - **The data gate (PEP-2, q-side, data-semantic):** *for this data, what is permitted?* — `read` on
   `data.trades`, over a data grant set, able to deny (and, later, scope-down).
 
-bob's divergent outcome — capability allowed, data denied — is the headline: the two layers are
-genuinely separate. Even a route-only tool (no capability grant of its own) is still data-gated. The
+bob's divergent outcome — capability allowed, data denied — shows that the two layers are genuinely
+separate, and even a route-only tool with no capability grant of its own is still data-gated. The
 SQL write-keyword blocklist remains the floor beneath both. (The capability check is the
 `@authorize(action="query", resource="kdbx.sql")` decorator over the `kx_auth_core.authz` `kdbx_rbac`
 adapter, active via `KX_MCP_AUTHZ=kdbx_rbac`; a capability-check deny raises a clean

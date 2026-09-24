@@ -4,7 +4,7 @@ from fastmcp.prompts import prompt
 
 logger = logging.getLogger(__name__)
 
-async def table_deep_dive_prompt_impl(
+def table_deep_dive_prompt_impl(
     table_name: str,
     analysis_type: str = "statistical",
     sample_size: int = 100
@@ -98,4 +98,4 @@ async def table_analysis(
     Conduct detailed analysis of a specific table.
     Analysis_type Options: statistical, data_quality.
     """
-    return await table_deep_dive_prompt_impl(table_name, analysis_type, sample_size)
+    return table_deep_dive_prompt_impl(table_name, analysis_type, sample_size)

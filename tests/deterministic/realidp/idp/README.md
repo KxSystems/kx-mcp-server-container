@@ -1,4 +1,4 @@
-# Inbound-auth lane (2.38–2.42, provider-agnostic)
+# Inbound-auth lane (2.38–2.42 provider-agnostic, plus 2.51–2.53 Keycloak-only)
 
 Tests the container's inbound `KX_MCP_AUTH=jwks` gate against a **live** IdP — real JWKS
 fetch, real RS256 signature check, real issuer/audience validation. Provider-agnostic via the
@@ -51,6 +51,15 @@ test_discovery_advertised          PASSED   (RFC 9728 PRM endpoint live)
 test_wrong_issuer_token_rejected   SKIPPED  (single-tenant Entra — see below; always active under Keycloak)
 ```
 
+Under `just test-keycloak` only, three more tests run — the `oidc_proxy` code-flow lane (§ below),
+skipped wholesale under `just test-entra`:
+
+```
+test_authorization_code_flow_yields_a_working_bearer            PASSED
+test_issued_bearer_is_the_containers_not_keycloaks               PASSED
+test_password_grant_keycloak_token_is_rejected_in_proxy_mode      PASSED
+```
+
 ## Wrong-issuer persona (test 2.41)
 
 `test_wrong_issuer_token_rejected` requires a token from a different issuer boundary:
@@ -71,6 +80,41 @@ test_wrong_issuer_token_rejected   SKIPPED  (single-tenant Entra — see below; 
 In both cases: a valid token from the wrong IdP boundary must not grant access — the real-world
 version of the single-issuer limitation tracked in `TESTING.md` (row X.3).
 
+## `oidc_proxy` authorization-code flow (2.51–2.53, Keycloak-only)
+
+`test_inbound_auth.py` above mints tokens by **password grant (ROPC)** — that never reaches
+`KX_MCP_AUTH=oidc_proxy`, because in that mode `/token` hands the client a bearer the *container*
+mints, while the real Keycloak token stays server-side. Only a real browser-shape
+authorization-code flow exercises it, so `test_oidc_proxy_code_flow.py` drives one for real:
+DCR at the container → `/authorize` → the container's own consent page → a real Keycloak login
+form → `/auth/callback` → `/token` (`oidc_proxy_driver.py`).
+
+**Why Keycloak-only:** the driver scrapes Keycloak's rendered login form; there is no Entra
+equivalent in this harness. The module is skipped wholesale under `AUTH_PROVIDER=entra`.
+
+**No extra step — the Quick start above already provisions it.** Step 2
+(`keycloak_setup.py keycloak_config.json`) now also creates the `kx-mcp-proxy` confidential
+client (`tenants.quants.proxy_client` in `keycloak_config.json`) —
+`directAccessGrantsEnabled: false` (deliberately: this client *cannot* password-grant, so the
+code flow is the only way through it) — with a redirect URI exact-matching the fixed port the
+container spawns on. `just test-keycloak` (step 4) already collects
+`test_oidc_proxy_code_flow.py` alongside `test_inbound_auth.py`, so running the Quick start runs
+both.
+
+The one thing to know if you ever change it: the port is **fixed**, not auto-selected
+(`KC_PROXY_PORT`, default `8765`) — the upstream redirect URI
+`{KX_MCP_AUTH_RESOURCE_URL}/auth/callback` is pre-registered byte-exact at Keycloak, so it must be
+knowable before the container spawns. Changing `KC_PROXY_PORT` means editing
+`proxy_client.redirect_uris` in `keycloak_config.json` and re-running `keycloak_setup.py` — safe
+to re-run any time, even with no port change, since `ensure_client` now reconciles a drifted
+`redirectUris`/`secret` back to the declared config instead of leaving a stale client in place.
+
+| Test | Row | What it proves |
+|---|---|---|
+| `test_authorization_code_flow_yields_a_working_bearer` | 2.51 | The full flow, against a live Keycloak, yields a bearer the container accepts on a real tool call |
+| `test_issued_bearer_is_the_containers_not_keycloaks` | 2.52 | The bearer is container-minted (`alg=HS256`, `iss`/`aud` name the container) — not Keycloak's `RS256` token |
+| `test_password_grant_keycloak_token_is_rejected_in_proxy_mode` | 2.53 | The same `alice` token that passes 2.38 under `jwks` is rejected here — the mode's defining behaviour |
+
 ## Directory
 
 ```
@@ -84,5 +128,7 @@ idp/
   personas.yaml      — alice, bob, charlie, root
   helpers.py         — assert_authenticated, assert_principal_visible, assert_rejected_401, assert_discovery_advertised
   test_inbound_auth.py — @pytest.mark.realidp tests 2.38–2.42 (provider-agnostic)
+  oidc_proxy_driver.py — drives a real authorization-code flow against KX_MCP_AUTH=oidc_proxy
+  test_oidc_proxy_code_flow.py — @pytest.mark.realidp tests 2.51–2.53 (Keycloak-only)
   README.md          — this file
 ```

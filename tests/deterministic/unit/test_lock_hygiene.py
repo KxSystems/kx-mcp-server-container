@@ -19,10 +19,12 @@ reproducible and allowed; any *network* registry other than public PyPI fails.
 
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 import pytest
+
+# `tomllib` is stdlib only from 3.11; this repo's floor is 3.10 (see tests/_toml_compat.py).
+from _toml_compat import tomllib
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PUBLIC_INDEX = "https://pypi.org/simple"

@@ -18,7 +18,7 @@ async def test_describe_tables_serializes_contract_document(mocker):
         return_value=document,
     )
 
-    result = await kdbx_describe_tables_impl(config="config", cache="cache")
+    result = kdbx_describe_tables_impl(config="config", cache="cache")
 
     assert json.loads(result[0].text) == document
     build.assert_called_once_with(config="config", cache="cache")
@@ -32,7 +32,7 @@ async def test_describe_one_table_threads_preview_and_instance_state(mocker):
         return_value=document,
     )
 
-    result = await kdbx_describe_table_impl(
+    result = kdbx_describe_table_impl(
         "trades", config="config", cache="cache", preview_rows=7
     )
 
@@ -49,7 +49,7 @@ async def test_resource_error_is_clean_json(mocker):
         side_effect=RuntimeError("connection failed"),
     )
 
-    result = await kdbx_describe_tables_impl()
+    result = kdbx_describe_tables_impl()
 
     document = json.loads(result[0].text)
     assert document["status"] == "error"

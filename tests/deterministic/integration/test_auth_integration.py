@@ -251,6 +251,153 @@ def test_jwks_resource_url_advertises_discovery_over_the_wire(jwks_uri, spawn_co
 
 
 # ---------------------------------------------------------------------------
+# oidc_proxy mode: the container is the authorization server the client sees
+# ---------------------------------------------------------------------------
+
+# The advertised base_url can't be the real (random) port — the env is fixed before
+# spawn_container picks one. The routes serve at the real port either way, and what these assert is
+# *which* server the metadata names.
+PROXY_BASE_URL = "http://127.0.0.1:8000"
+
+
+def test_oidc_proxy_advertises_the_container_as_the_authorization_server(oidc_issuer, spawn_container):
+    """The container serves RFC 8414 AS metadata naming *itself* — the capability `jwks` lacks.
+
+    `jwks` advertises the upstream issuer and expects the client to register there, which a
+    closed-DCR issuer refuses. Here every endpoint the client is handed is the container's own.
+    """
+    import httpx
+
+    issuer, _ = oidc_issuer
+    url, _ = spawn_container(
+        KX_MCP_AUTH="oidc_proxy",
+        KX_MCP_AUTH_ISSUER=issuer,
+        KX_MCP_AUTH_CLIENT_ID="pre-registered-app",
+        KX_MCP_AUTH_CLIENT_SECRET="pre-registered-secret",
+        KX_MCP_AUTH_AUDIENCE=AUDIENCE,
+        KX_MCP_AUTH_RESOURCE_URL=PROXY_BASE_URL,
+    )
+    origin = url.rsplit("/mcp", 1)[0]
+
+    meta = httpx.get(f"{origin}/.well-known/oauth-authorization-server")
+    assert meta.status_code == 200, meta.text
+    body = meta.json()
+
+    # The container names itself, not the upstream issuer — the defining difference from jwks.
+    assert body["issuer"].rstrip("/") == PROXY_BASE_URL
+    for endpoint in ("authorization_endpoint", "token_endpoint", "registration_endpoint"):
+        assert body[endpoint].startswith(PROXY_BASE_URL), (endpoint, body[endpoint])
+        assert not body[endpoint].startswith(issuer), f"{endpoint} leaks the upstream issuer"
+
+
+def test_oidc_proxy_accepts_local_dynamic_client_registration(oidc_issuer, spawn_container):
+    """The DCR facade is live: a client registers with the container and gets usable credentials.
+
+    The fixture issuer has no registration endpoint, so only the proxy can be answering.
+    """
+    import httpx
+
+    issuer, _ = oidc_issuer
+    url, _ = spawn_container(
+        KX_MCP_AUTH="oidc_proxy",
+        KX_MCP_AUTH_ISSUER=issuer,
+        KX_MCP_AUTH_CLIENT_ID="pre-registered-app",
+        KX_MCP_AUTH_CLIENT_SECRET="pre-registered-secret",
+        KX_MCP_AUTH_AUDIENCE=AUDIENCE,
+        KX_MCP_AUTH_RESOURCE_URL=PROXY_BASE_URL,
+    )
+    origin = url.rsplit("/mcp", 1)[0]
+
+    # Follow the advertised registration path rather than hard-coding FastMCP's route.
+    advertised = httpx.get(f"{origin}/.well-known/oauth-authorization-server").json()
+    register_path = "/" + advertised["registration_endpoint"].split("/", 3)[3]
+
+    resp = httpx.post(
+        f"{origin}{register_path}",
+        json={
+            "client_name": "kx-integration-test-client",
+            "redirect_uris": ["http://localhost:9999/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "client_secret_post",
+        },
+    )
+    assert resp.status_code in (200, 201), resp.text
+    registered = resp.json()
+    assert registered["client_id"]
+    assert registered["redirect_uris"] == ["http://localhost:9999/callback"]
+
+
+def test_oidc_proxy_still_rejects_an_unauthenticated_call(oidc_issuer, spawn_container):
+    """Fronting the login does not weaken the gate: no bearer is still 401, with the PRM pointer."""
+    import httpx
+
+    issuer, _ = oidc_issuer
+    url, _ = spawn_container(
+        KX_MCP_AUTH="oidc_proxy",
+        KX_MCP_AUTH_ISSUER=issuer,
+        KX_MCP_AUTH_CLIENT_ID="pre-registered-app",
+        KX_MCP_AUTH_CLIENT_SECRET="pre-registered-secret",
+        KX_MCP_AUTH_AUDIENCE=AUDIENCE,
+        KX_MCP_AUTH_RESOURCE_URL=PROXY_BASE_URL,
+    )
+    origin = url.rsplit("/mcp", 1)[0]
+
+    prm = httpx.get(f"{origin}/.well-known/oauth-protected-resource/mcp")
+    assert prm.status_code == 200, prm.text
+    # The client is sent to the container, not the upstream issuer, to authorize.
+    assert [s.rstrip("/") for s in prm.json()["authorization_servers"]] == [PROXY_BASE_URL]
+
+    resp = httpx.post(
+        url,
+        headers={"Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+    )
+    assert resp.status_code == 401
+    assert "resource_metadata" in resp.headers.get("www-authenticate", "")
+
+
+@pytest.mark.parametrize(
+    "strict,expect_start",
+    [("true", False), ("false", True)],
+    ids=["strict-rejects", "lenient-accepts"],
+)
+def test_oidc_proxy_strict_discovery_switch(oidc_issuer, spawn_container, strict, expect_start):
+    """A document missing an OIDC-required field starts only with the strict opt-out. Real issuers
+    do omit fields (`subject_types_supported` most often), so both halves are pinned."""
+    _, lenient_config_url = oidc_issuer
+    env = dict(
+        KX_MCP_AUTH="oidc_proxy",
+        KX_MCP_AUTH_CONFIG_URL=lenient_config_url,
+        KX_MCP_AUTH_CLIENT_ID="pre-registered-app",
+        KX_MCP_AUTH_CLIENT_SECRET="pre-registered-secret",
+        KX_MCP_AUTH_AUDIENCE=AUDIENCE,
+        KX_MCP_AUTH_RESOURCE_URL=PROXY_BASE_URL,
+        KX_MCP_AUTH_OIDC_STRICT=strict,
+    )
+    if expect_start:
+        url, _ = spawn_container(**env)
+        assert url
+    else:
+        with pytest.raises(RuntimeError, match="exited"):
+            spawn_container(**env)
+
+
+def test_oidc_proxy_unreachable_issuer_fails_at_startup(spawn_container):
+    """Discovery runs in the constructor, so a bad issuer refuses to start rather than failing at
+    first login — and the container won't start while the IdP is down."""
+    with pytest.raises(RuntimeError) as excinfo:
+        spawn_container(
+            KX_MCP_AUTH="oidc_proxy",
+            KX_MCP_AUTH_ISSUER="http://127.0.0.1:1/realms/nope",
+            KX_MCP_AUTH_CLIENT_ID="pre-registered-app",
+            KX_MCP_AUTH_CLIENT_SECRET="pre-registered-secret",
+            KX_MCP_AUTH_RESOURCE_URL=PROXY_BASE_URL,
+        )
+    assert "exited" in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------------
 # unset mode: bundling posture (no auth, no bearer required)
 # ---------------------------------------------------------------------------
 

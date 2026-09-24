@@ -7,7 +7,7 @@
 #
 # With backends profile: adds kdbai-db (OAuth) — for the KA.* ACL-persona authz suite
 # (test_kdbai_acl.py driving --bundles kdbai against a real OAuth KDB.AI + real OIDC tokens).
-# Requires: docker login registry.gitlab.com + KDB_LICENSE_B64 env var set.
+# Requires: docker login portal.dl.kx.com (see below) + KDB_LICENSE_B64 env var set.
 #
 #   KDB_LICENSE_B64=$(base64 ~/.kx/kc.lic) docker compose --profile backends up -d
 #
@@ -62,10 +62,11 @@ services:
   # ---------------------------------------------------------------------------
 
   kdbai-db:
-    # OAuth-enabled KDB.AI server (registry-gated image — requires docker login registry.gitlab.com
+    # OAuth-enabled KDB.AI server (registry-gated image — requires docker login portal.dl.kx.com,
+    # see https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image,
     # and a kdb+ license in KDB_LICENSE_B64). Authenticates via the Keycloak realms provisioned
     # above; groups claim drives ACL enforcement (trader/viewer/admin per tenant).
-    image: kdbai-db:latest
+    image: portal.dl.kx.com/kdbai-db:latest
     profiles:
       - backends
     environment:

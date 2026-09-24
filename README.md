@@ -8,7 +8,7 @@ extensions through the same contract.
 The server is the **control plane** — it is the single place where inbound authentication, the
 authorization seam, and outbound identity propagation attach (see
 [authentication & authorization](docs/auth.md)). Inbound authentication (`KX_MCP_AUTH` —
-`unset` / `static` / `jwks` / `entra`), outbound identity propagation, and the authorization seam
+`unset` / `static` / `jwks` / `oidc_proxy` / `entra`), outbound identity propagation, and the authorization seam
 are all **wired (opt-in)** — the capability check (`@authorize`, PEP-1) and the per-backend data
 gates (PEP-2). Each **backend** is mounted as a namespaced bundle, so its tools, resources, and prompts
 appear under a prefix (e.g. `kdbx_run_sql_query`, `tables://kdbx/all`) with no cross-backend
@@ -24,9 +24,11 @@ collisions.
 | **Migrate** from the standalone kdb-x / KDB.AI MCP server | [Coming from the standalone servers](#coming-from-the-standalone-kdb-x-or-kdbai-server) — same tools, now one launch command, and you can run both backends in one server |
 | **Assemble your own server** from the packages | [`demos/extending/`](demos/extending/) — the runnable downstream reference (builds the wheels from source) |
 | **Extend** it with a new backend | The [extender guide](docs/extending.md) — contract + tutorial |
+| **Monitor** it | The [observability guide](docs/observability.md) — opt-in Prometheus metrics (`/metrics`) and OpenTelemetry tracing |
 
 The user guides live under [`docs/`](docs/): [deployment](docs/deployment.md) ·
-[authentication & authorization](docs/auth.md) · [writing a backend](docs/extending.md).
+[authentication & authorization](docs/auth.md) · [observability](docs/observability.md) ·
+[writing a backend](docs/extending.md).
 
 ## Table of contents
 
@@ -125,10 +127,9 @@ bundle wheel matching the `--bundles` list. The kdb-x licence resolves from a co
 install exactly as above.
 
 > **PyPI currently holds `0.5.0b1`, a pre-release.** The unpinned command works because it is the only
-> version there; pin `==0.5.0b1` to stay on it once a final release exists. Final releases (`0.4.0` and
-> earlier) are on the internal KX Nexus.
+> version there; pin `==0.5.0b1` to stay on it once a final release exists.
 
-Both indexes, pinning, and prerequisites:
+Pinning and prerequisites:
 [deployment guide § quickstart](docs/deployment.md#quickstart--three-ways-to-run-it).
 
 ## How it works
@@ -148,7 +149,7 @@ app.run(transport="streamable-http", host="0.0.0.0", port=8000)
 
 That glue lives in [server.py](server.py). The equivalent **zero-code** path is the launcher
 (`kx-mcp --bundles kdbx`), built from the same seam. There is no container runtime and no
-discovery/activation machinery — assembly *is* selection.
+discovery/activation machinery to configure; you just choose what to mount.
 
 The repository is a [uv](https://docs.astral.sh/uv/) workspace of **five installable packages**:
 
@@ -162,11 +163,10 @@ server.py               # headline glue
 examples/host.q         # sample KDB-X host on :5010 for local testing
 ```
 
-This project doesn't just assemble a server — it **produces modules**. All five packages are published as
-versioned wheels — to PyPI, and to the internal KX Nexus — so a downstream project can `uv`/`pip`-install just the pieces
-it needs (the container + auth core, plus whichever backend bundles) and assemble its own server in a
-few lines, rather than working from this checkout. See [`demos/extending`](demos/extending) for a
-worked external-consumer build.
+This project also **produces modules**: all five packages are published as versioned wheels to PyPI,
+so a downstream project can `uv`/`pip`-install just the pieces it needs (the container + auth core,
+plus whichever backend bundles) and assemble its own server in a few lines, rather than working from
+this checkout. See [`demos/extending`](demos/extending) for a worked external-consumer build.
 
 ## Available backends
 
@@ -182,7 +182,7 @@ heavy dependencies (e.g. PyKX for kdb-x) are pulled in **only** when that bundle
 
 The **`kdbx`** and **`kdbai`** backends *are* the servers you already know — the OSS
 `kdb-x-mcp-server` and `kdbai-mcp-server`, re-shipped as bundles that mount into one container.
-Everything you ran before still works; deploying and activating it is simpler.
+Everything you ran before still works. Launching and configuring it is now simpler, too.
 
 **Same tools.** The capabilities are unchanged (no regression) — kdb-x still gives you
 `run_sql_query`, `similarity_search`, `hybrid_search`, the table-schema resource, and the
@@ -252,8 +252,10 @@ Container launcher flags / env vars:
 **Inbound authentication** (`KX_MCP_AUTH`, env only — keeps the container CLI simple): `unset` (no
 auth — the single-principal bundling posture), `static` (RS256 against a local public-key PEM —
 `KX_MCP_AUTH_PUBLIC_KEY` or `KX_MCP_AUTH_PUBLIC_KEY_PATH`), `jwks` (RS256 against a remote JWKS
-endpoint — `KX_MCP_AUTH_JWKS_URI`; Keycloak / Auth0 / any OIDC issuer), or `entra` (Microsoft Entra
-via an OAuth-proxy front door — `KX_MCP_AUTH_CLIENT_ID` / `_CLIENT_SECRET` / `_TENANT_ID`). `static`
+endpoint — `KX_MCP_AUTH_JWKS_URI`; Keycloak / Auth0 / any OIDC issuer), `oidc_proxy` (the container
+fronts the login for any OIDC issuer whose dynamic client registration is closed —
+`KX_MCP_AUTH_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` / `_RESOURCE_URL`), or `entra` (the same, pinned
+to Microsoft Entra — `KX_MCP_AUTH_CLIENT_ID` / `_CLIENT_SECRET` / `_TENANT_ID`). `static`
 and `jwks` also take `KX_MCP_AUTH_ISSUER`, `KX_MCP_AUTH_AUDIENCE`, and optional
 `KX_MCP_AUTH_REQUIRED_SCOPES`. When set, parent auth guards every mounted backend (unauthenticated
 calls get a spec-compliant `401`) and the validated principal is exposed to backend tools. The
@@ -275,6 +277,10 @@ Two transports, matching the two deployment topologies:
   the same host.
 
 The deprecated SSE transport is not supported.
+
+Over HTTP the container also serves **`GET /health`** → `200 OK` on the same port as `/mcp`. It is
+unauthenticated (an orchestrator's probe carries no bearer) and reports process liveness, not
+backend reachability — see [docs/deployment.md](docs/deployment.md).
 
 ### Zero-config STDIO bundling
 
@@ -320,9 +326,9 @@ export KX_MCP_AUTH_RESOURCE_URL="http://127.0.0.1:8000"                 # this s
 uv run kx-mcp --bundles <backend> --transport streamable-http --host 127.0.0.1 --port 8000
 ```
 
-A bearer that fails validation is rejected with `401`; a valid one is exposed to the mounted backends
-as the request principal. An OAuth-capable extension can then pass it through to its data plane or
-exchange it for a backend-scoped credential; KDB.AI implements both supported postures.
+A bearer that fails validation is rejected with `401`. A valid one gets exposed to the mounted
+backends as the request principal, and an OAuth-capable extension can pass it through to its data
+plane or exchange it for a backend-scoped credential — KDB.AI implements both supported postures.
 
 > **Client-driven discovery.** Setting `KX_MCP_AUTH_RESOURCE_URL` (this server's public URL) makes the
 > container advertise OAuth 2.0 Protected Resource Metadata ([RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728)):
@@ -469,11 +475,9 @@ For interactive development/debugging of MCP primitives, the
 ## Design & strategy
 
 The container is the seam for KX's agentic auth work — inbound authn, the authorization seam, and
-outbound identity propagation. The user-facing reference for all of this is the guide set under
-[`docs/`](docs/): [deployment](docs/deployment.md) · [authentication & authorization](docs/auth.md) ·
-[writing a backend](docs/extending.md). The deeper strategy and design specs (container shape,
-token-exchange, identity-assertion, authorization, and the milestone backlog) are maintained in the
-project's internal design docs.
+outbound identity propagation. The guide set under [`docs/`](docs/) covers all of it:
+[deployment](docs/deployment.md), [authentication & authorization](docs/auth.md), and
+[writing a backend](docs/extending.md).
 
 ## Useful resources
 

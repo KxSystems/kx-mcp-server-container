@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
 
+import pytest
+
 from kx_mcp_kdbai.utils.filters import (
     cast_temporal_value,
     is_list_of_iso_datetimes,
@@ -80,6 +82,15 @@ def test_a_malformed_filter_item_is_passed_through_not_recursed():
     one_item = ["lonely"]
     result = parse_temporal_filters([one_item], SCHEMA)
     assert result == [one_item]
+
+
+@pytest.mark.parametrize("bad_item", ["abc", {"x": 1, "y": 2, "z": 3}])
+def test_three_length_non_list_filter_item_is_rejected_not_silently_unpacked(bad_item):
+    """A 3-length filter item that ISN'T a list (a 3-char string, a 3-key dict) is silently
+    unpacked today via `op, left, right = f` — producing nonsense filters with no validation
+    error. Must raise, not silently reinterpret."""
+    with pytest.raises((TypeError, ValueError)):
+        parse_temporal_filters([bad_item], SCHEMA)
 
 
 # --- happy path: one comparison per temporal type ------------------------------------------------

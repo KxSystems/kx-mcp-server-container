@@ -15,7 +15,8 @@ authorization seam, and outbound identity propagation to each backend:
 | **INBOUND** | the `KX_MCP_AUTH` verifier validates every bearer before any backend runs (issuer/audience/scope/expiry/signature/kid), sets the principal contextvar, audits the dispatch | `unit/test_auth.py`, `integration/test_auth_integration.py`, `realidp/idp/` → [Part 3 § Inbound auth](#inbound--inbound-auth-verifier-seam) |
 | **AUTHZ (S/A/R)** | a dispatch is allowed/denied by principal × action; the decision + adapter are audited | `unit/test_authorize.py`, `integration/test_authz_integration.py`, kdbx `test_authz_kx_rbac.py`, `realidp/kdbai/` → [Part 3 § Authorization](#authz--sar-seam--per-backend-authz) |
 | **OUTBOUND** | the validated identity is propagated to the backend (`passthrough`/`rfc_8693`/`service_account`; identity assertion to plain kdb+) | kx-auth-core `test_outbound.py`, `integration/test_outbound_integration.py`, `realidp/{kdbai,kdbx}/` → [Part 3 § Outbound propagation](#outbound--oauth-backend-identity-propagation) / [§ Identity assertion](#outbound--identity-assertion-to-plain-kdb-x) |
-| **Cross-cutting** | container shape, logging, packaging-deps, CLI contract | → [Part 3 § Container shape](#container-shape--extension-contract) / [§ Cross-cutting](#cross-cutting--structural) |
+| **OBSERVABILITY** | every dispatch is counted/timed/spanned with the right outcome (`ok`/`denied`/`error`); the seam stays inert unless opted in; the shipped backends' own instrumentation reaches the same scrape | `unit/test_observability.py`, `unit/test_runtime_metrics.py` (in-process), `integration/test_observability_metrics_e2e.py` (real subprocess + real kdb+, incl. the `isError`-contract regression) |
+| **Cross-cutting** | container shape, the `/health` probe, logging, packaging-deps, CLI contract | → [Part 3 § Container shape](#container-shape--extension-contract) / [§ Cross-cutting](#cross-cutting--structural) |
 
 Part 3 groups the same rows by *concern* rather than by when the work landed. Details:
 
@@ -65,9 +66,9 @@ real-IdP tests — their *assertion kind* is still deterministic even though the
 
 | Sub-tier | Infra | CI? | Key files |
 |---|---|---|---|
-| **unit** | in-process, no subprocess | yes | `unit/test_auth.py`, `test_auth_cli_contract.py`, `test_authorize.py`, `test_audit_shape.py`, `test_composition.py`, `test_launcher.py`, `test_logging.py`, `test_packaging_deps.py` |
-| **integration** | real subprocess, license-free | yes | `integration/test_auth_integration.py`, `test_authz_integration.py`, `test_audit_logging.py`, `test_outbound_integration.py`, `test_stdio_smoke.py` |
-| **realidp** | live Keycloak/Entra; kdbai lane also needs registry-gated `kdbai-db`; kdbx lane also spawns its own throwaway real `q` process | **no** (`-m 'not realidp'`) | `realidp/idp/test_inbound_auth.py` (inbound auth, provider-agnostic), `realidp/kdbai/test_kdbai_acl.py` (OAuth ACL, KA), `realidp/kdbx/test_kdbx_ferry.py` (ferry live, real q) |
+| **unit** | in-process, no subprocess | yes | `unit/test_auth.py`, `test_auth_cli_contract.py`, `test_authorize.py`, `test_audit_shape.py`, `test_composition.py`, `test_health.py`, `test_launcher.py`, `test_logging.py`, `test_packaging_deps.py`, `test_observability.py`, `test_runtime_metrics.py` |
+| **integration** | real subprocess; most of this tier is license-free, a few files (noted per-row in the integration README) need a real `q` + kdb-x license and self-skip cleanly without one | yes | `integration/test_auth_integration.py`, `test_authz_integration.py`, `test_audit_logging.py`, `test_health_integration.py`, `test_outbound_integration.py`, `test_stdio_smoke.py`, `test_observability_metrics_e2e.py` |
+| **realidp** | live Keycloak/Entra; kdbai lane also needs registry-gated `kdbai-db`; kdbx lane also spawns its own throwaway real `q` process | **no** (`-m 'not realidp'`) | `realidp/idp/test_inbound_auth.py` (inbound auth, provider-agnostic), `realidp/idp/test_oidc_proxy_code_flow.py` (`oidc_proxy` authorization-code flow, Keycloak-only), `realidp/kdbai/test_kdbai_acl.py` (OAuth ACL, KA), `realidp/kdbx/test_kdbx_ferry.py` (ferry live, real q) |
 
 ---
 
@@ -104,6 +105,7 @@ In-process verifier tests — no HTTP, no subprocess.
 | **unset mode** | No provider built; tool call succeeds without a token; `current_principal()` returns None |
 | **static mode** | Valid token accepted; expired/bad-sig/wrong-issuer/wrong-audience/missing-scope all rejected; PEM loaded from path |
 | **jwks mode** | Same acceptance/rejection rules on the JWKS code path; kid mismatch rejected |
+| **oidc_proxy mode** | Config mapped onto FastMCP's `OIDCProxy`; discovery URL derived from the issuer or named explicitly; missing field / secretless-client fail-fast; missing-audience warning; strict opt-out |
 | **pluggable seam** | Unknown mode raises `ValueError`; new modes register via `register_auth_mode` without touching dispatch |
 | **config binding** | `KX_MCP_AUTH` is the bare mode var; empty/whitespace collapses safely to `unset` |
 | **audit middleware** | All three action kinds (`tool_invoke`, `resource_read`, `prompt_get`) emit correct audit records; `outcome=error` covered; `audit=False` suppresses middleware |
@@ -121,6 +123,11 @@ Real subprocess over HTTP — catches auth wiring and contextvar propagation bug
 | `test_wrong_audience_is_rejected_401` | Wrong `aud` claim → 401 |
 | `test_missing_required_scope_is_rejected` | Token lacks required scope → 4xx |
 | `test_jwks_valid_bearer_reaches_mounted_tool` | JWKS mode end-to-end: subprocess fetches the in-process JWKS server, validates, tool runs |
+| `test_oidc_proxy_advertises_the_container_as_the_authorization_server` | Proxy mode: RFC 8414 metadata names the container, not the upstream issuer |
+| `test_oidc_proxy_accepts_local_dynamic_client_registration` | The DCR facade is live — a client registers with the container and gets credentials |
+| `test_oidc_proxy_still_rejects_an_unauthenticated_call` | Fronting the login doesn't weaken the gate: no bearer → 401 + PRM pointer |
+| `test_oidc_proxy_unreachable_issuer_fails_at_startup` | Discovery runs in the constructor, so a bad issuer is a startup failure |
+| `test_oidc_proxy_strict_discovery_switch` | A discovery document missing an OIDC-required field starts only with `OIDC_STRICT=false` |
 | `test_unset_auth_no_bearer_works` | `KX_MCP_AUTH=""` → tool runs without any bearer (single-principal / bundling posture) |
 
 ### `deterministic/unit/test_auth_cli_contract.py`
@@ -129,7 +136,7 @@ Runs the same token through both `kx_auth_core.verify_token` (joserfc, used by `
 
 ### `deterministic/unit/test_logging.py` / `test_packaging_deps.py`
 
-Two structural regressions, not auth logic: `test_logging.py` locks in the `configure_logging` brand filter (admits the `kx_mcp*` container and bundle-sibling logger trees, rejects third-party loggers, idempotent). `test_packaging_deps.py` AST-scans every workspace package's `src/` and asserts each first-party cross-package import is declared in that package's `pyproject.toml` — the uv workspace masks a missing declaration in dev; a Nexus-installed wheel would `ImportError`.
+Two structural regressions, not auth logic: `test_logging.py` locks in the `configure_logging` brand filter (admits the `kx_mcp*` container and bundle-sibling logger trees, rejects third-party loggers, idempotent). `test_packaging_deps.py` AST-scans every workspace package's `src/` and asserts each first-party cross-package import is declared in that package's `pyproject.toml` — the uv workspace masks a missing declaration in dev; a wheel installed from a package index would `ImportError`.
 
 ### Outbound + identity-assertion coverage (package-level and integration)
 
@@ -238,7 +245,7 @@ even though the license is genuinely there. `just test-kdbx` scopes collection t
 ```
 conftest.py                                ← repo-root: crypto fixtures (keypair, mint, jwks_uri, mock_sts)
 tests/
-  conftest.py                              ← spawn harness (spawn_container)
+  conftest.py                              ← spawn harness (spawn_container, spawn_container_module)
   _pykx_env.py                             ← tier-neutral: strips pykx's process-wide env
                                              contamination before spawning a pykx-backed child
                                              (used by realidp/_spawn.py and test_kdbx_data_gate_e2e.py)
@@ -254,6 +261,9 @@ tests/
       test_launcher.py                     ← launcher env + config unit tests
       test_logging.py                      ← configure_logging brand filter + idempotency
       test_packaging_deps.py               ← AST-scan: first-party imports declared per package
+      test_observability.py                ← metrics/tracing middleware, route mounting, outcome
+                                             classification, metric()/span() — in-process, mocked
+      test_runtime_metrics.py              ← in-flight gauge, event-loop lag sampler, build info
     integration/
       conftest.py                          ← auto-marks @pytest.mark.integration
       test_auth_integration.py             ← over-the-wire subprocess integration tests
@@ -267,11 +277,20 @@ tests/
       kx_auth_assertion_gate.q             ← kx.auth bind/authorize/entitled/configure/HTTP-path
                                              logic, run by test_kx_auth_assertion_gate.py
       test_kx_auth_assertion_gate.py       ← real-q driver for the file above (self-skips, no q/license)
-      kx_auth_rebind.q                     ← kx.auth bind's wholesale-replacement regression (KXI-72739)
+      kx_auth_rebind.q                     ← kx.auth bind's wholesale-replacement regression
       test_kx_auth_rebind.py               ← real-q driver for the file above (self-skips, no q/license)
       kdbx_data_gate_host.q                ← real-q host for the PEP-2 data-gate e2e test below
       test_kdbx_data_gate_e2e.py           ← full chain: real q host + real container + real MCP
                                              client, PEP-2 data gate (self-skips, no q/license)
+      kdbx_sql_blocklist_host.q            ← real-q host (.s.init[] + `trades`), shared by the
+                                             blocklist-bypass test and the observability e2e below
+      test_observability_metrics_e2e.py    ← Prometheus metrics over the wire: /metrics on/off
+                                             (one case license-free), isError-contract regression
+                                             (outcome=ok/error over a real transport), in-flight
+                                             gauge on the failure path, kdbx_qipc_calls_total
+                                             reaching the container's scrape, tables://kdbx/all's
+                                             qIPC fan-out (self-skips its kdbx-backed cases, no
+                                             q/license)
     realidp/
       _spawn.py                            ← _free_port, _wait_until_listening
       envs/
@@ -284,6 +303,8 @@ tests/
         fixtures/                          ← session-scoped persona token fixtures
         providers/{base.py, keycloak.py, entra.py}   ← TokenProvider ABC + implementations
         test_inbound_auth.py               ← @pytest.mark.realidp tests 2.38–2.42
+        oidc_proxy_driver.py               ← drives a real authorization-code flow (Keycloak-only)
+        test_oidc_proxy_code_flow.py       ← @pytest.mark.realidp tests 2.51–2.53, skips under Entra
       kdbai/                               ← OAuth ACL harness (registry-gated kdbai-db)
         conftest.py                        ← _require_idp, _spawn_container, kdbai_container_url,
                                              kdbai_manager_container_url (KA.5 second container)
@@ -325,7 +346,7 @@ just test-keycloak
 # Requires a kdb-x install (`q` on PATH or ~/.kx/bin/q) with a valid license
 just test-kdbx
 
-# KDB.AI OAuth ACL (requires docker login registry.gitlab.com + KDBX license)
+# KDB.AI OAuth ACL (requires docker login portal.dl.kx.com + KDBX license)
 # All steps from the repo root — see realidp/kdbai/README.md for the full walkthrough.
 # 1. mkdir -p tests/deterministic/realidp/setup/keycloak/kdbai-data \
 #             tests/deterministic/realidp/setup/keycloak/acl-data
@@ -376,7 +397,8 @@ gate (what infra the test needs), not a section marker.
 
 ## Container shape + extension contract
 
-> Scope: assembly seam, bundle mount/namespace, STDIO bundling, launcher env parsing.
+> Scope: assembly seam, bundle mount/namespace, the `/health` route, STDIO bundling, launcher env
+> parsing.
 > All tests are in the container-level `tests/` suite using the license-free `example` fixture.
 
 | # | Test | File | Function | Status | Priority | Notes |
@@ -385,6 +407,10 @@ gate (what infra the test needs), not a section marker.
 | 1.2 | Bundle auto-registers under namespaced prefix; no cross-bundle collision | deterministic/unit/test_composition.py | `test_single_bundle_is_namespaced` / `test_multi_backend_recomposition_without_collision` | existing | — | |
 | 1.3 | STDIO spawn in-process: `example_echo` reachable via FastMCP `Client` | deterministic/integration/test_stdio_smoke.py | `test_stdio_smoke_in_process` | existing | — | |
 | 1.4 | STDIO spawn as real subprocess: `example_echo` reachable via `StdioTransport` | deterministic/integration/test_stdio_smoke.py | `test_stdio_smoke_subprocess` | existing | — | |
+| 1.5 | `GET /health` → 200 `OK` by default; `health=False` opts out; GET-only | deterministic/unit/test_health.py | `test_health_is_served_by_default` / `test_health_opt_out_leaves_no_route` / `test_health_is_get_only` | existing | — | Real `http_app()`, lifespan entered |
+| 1.6 | The probe needs **no bearer** while `/mcp` 401s — one app, and one live process | deterministic/unit/test_health.py + deterministic/integration/test_health_integration.py | `test_health_needs_no_bearer_while_mcp_does` / `test_health_answers_unauthenticated_while_mcp_is_protected` | existing | — | A gated probe restarts healthy pods in a loop |
+| 1.7 | A mounted bundle's own `/health` cannot displace the parent's | deterministic/unit/test_health.py | `test_parent_health_wins_over_a_mounted_bundles_own` | existing | — | Parent routes are collected first |
+| 1.8 | Probe traffic emits no audit line | deterministic/unit/test_health.py | `test_health_is_not_audited` | existing | — | Audit records MCP dispatch, not HTTP routes |
 
 ---
 
@@ -456,6 +482,14 @@ gate (what infra the test needs), not a section marker.
 | 2.35 | `static`: bearer with wrong audience → 401 | deterministic/integration/test_auth_integration.py | `test_wrong_audience_is_rejected_401` | existing | — | |
 | 2.36 | `static`: token missing required scope → rejected | deterministic/integration/test_auth_integration.py | `test_missing_required_scope_is_rejected` | existing | — | Asserts 401 or 403 (FastMCP maps scope failure to 4xx) |
 | 2.37 | `unset`: no auth configured, tool call works without any bearer | deterministic/integration/test_auth_integration.py | `test_unset_auth_no_bearer_works` | existing | — | Passes `KX_MCP_AUTH=""` to neutralise any ambient env var |
+| 2.43 | `oidc_proxy`: builder maps config onto `OIDCProxy`; discovery URL derived from issuer or named explicitly | deterministic/unit/test_auth.py | `test_oidc_proxy_builds_proxy_with_app_config`, `test_oidc_proxy_derives_config_url_from_issuer`, `test_oidc_proxy_explicit_config_url_wins_over_issuer`, `test_oidc_proxy_config_url_alone_is_enough` | new | — | |
+| 2.44 | `oidc_proxy`: missing required field, and a secretless client with no signing key, both fail fast | deterministic/unit/test_auth.py | `test_oidc_proxy_missing_config_raises`, `test_oidc_proxy_public_client_requires_a_signing_key`, `test_oidc_proxy_public_client_with_signing_key_builds` | new | — | |
+| 2.45 | `oidc_proxy`: an unset audience warns but still starts (`aud` then unvalidated) | deterministic/unit/test_auth.py | `test_oidc_proxy_without_audience_warns_but_builds` | new | — | The one knob whose default is permissive |
+| 2.46 | `oidc_proxy`: the container advertises **itself** as the authorization server (RFC 8414), upstream issuer absent from every endpoint | deterministic/integration/test_auth_integration.py | `test_oidc_proxy_advertises_the_container_as_the_authorization_server` | new | — | The capability `jwks` cannot provide. Live-IdP counterpart: 2.51–2.53 |
+| 2.47 | `oidc_proxy`: local dynamic client registration is served and returns usable credentials | deterministic/integration/test_auth_integration.py | `test_oidc_proxy_accepts_local_dynamic_client_registration` | new | — | Fixture issuer has no registration endpoint, so this can only be the proxy. Live-IdP counterpart: 2.51–2.53 |
+| 2.48 | `oidc_proxy`: an unauthenticated call is still 401 with the PRM pointer | deterministic/integration/test_auth_integration.py | `test_oidc_proxy_still_rejects_an_unauthenticated_call` | new | — | |
+| 2.49 | `oidc_proxy`: an unreachable issuer fails at startup, not at first login | deterministic/integration/test_auth_integration.py | `test_oidc_proxy_unreachable_issuer_fails_at_startup` | new | — | Discovery runs in the constructor |
+| 2.50 | `oidc_proxy`: strict discovery rejects a document missing an OIDC-required field; `OIDC_STRICT=false` accepts it | deterministic/integration/test_auth_integration.py, `oidc_issuer` fixture | `test_oidc_proxy_strict_discovery_switch` | new | — | `subject_types_supported` is the field issuers most often omit |
 
 ### Real-IdP integration (Keycloak now, Entra ID later — `@pytest.mark.realidp`, manual/local)
 
@@ -467,6 +501,19 @@ gate (what infra the test needs), not a section marker.
 > `idp/personas.yaml`, `idp/fixtures/`, `idp/providers/`, `idp/helpers.py`). The kdbai lane holds
 > only the OAuth-ACL tests (KA.1–KA.9 below); setup scripts live at
 > `deterministic/realidp/setup/{keycloak,entra}/`.
+>
+> **`oidc_proxy` code-flow sub-lane (rows 2.51–2.53), Keycloak-only.** `test_inbound_auth.py`'s
+> ROPC (password-grant) token acquisition never reaches `KX_MCP_AUTH=oidc_proxy` — the mode hands
+> the client a bearer the *container* mints, not the IdP's, so only a real browser-shape
+> authorization-code flow exercises it. `idp/oidc_proxy_driver.py` drives that flow (DCR at the
+> container → `/authorize` → the container's own consent page → a real Keycloak login form →
+> `/auth/callback` → `/token`) against a dedicated confidential client (`kx-mcp-proxy`,
+> `directAccessGrantsEnabled: false`) provisioned by `keycloak_setup.py`
+> (`tenants.quants.proxy_client` in `keycloak_config.json`) on a **fixed** port (`KC_PROXY_PORT`,
+> default `8765`) — fixed because the upstream redirect URI `{KX_MCP_AUTH_RESOURCE_URL}/auth/callback`
+> is pre-registered at Keycloak and must be knowable before spawn. `test_oidc_proxy_code_flow.py`
+> is skipped wholesale under `AUTH_PROVIDER=entra` (the login-form scraping is Keycloak HTML with
+> no Entra equivalent in this harness).
 
 | # | Test | File | Function | Status | Priority | Notes |
 |---|---|---|---|---|---|---|
@@ -475,6 +522,9 @@ gate (what infra the test needs), not a section marker.
 | 2.40 | Tampered real token (signature byte corrupted) rejected with 401 | deterministic/realidp/idp/test_inbound_auth.py | `test_tampered_token_rejected` | existing | important | Proves live JWKS fetch + RS256 signature check, not just format validation |
 | 2.41 | Real token from wrong realm/tenant rejected by container | deterministic/realidp/idp/test_inbound_auth.py | `test_wrong_issuer_token_rejected` | existing | important | charlie's token has `iss=.../realms/risk`; Entra equivalent: second-tenant token. Issuer mismatch → 401. Provider seam (`AUTH_PROVIDER=keycloak\|entra`) proven structurally by `TokenProvider` ABC + conftest switching |
 | 2.42a | Real IdP: container advertises RFC 9728 Protected Resource Metadata over the wire | deterministic/realidp/idp/test_inbound_auth.py | `test_discovery_advertised` | existing | important | Live `/.well-known/oauth-protected-resource/mcp`; `_spawn_container` sets `KX_MCP_AUTH_RESOURCE_URL` for all realidp sessions |
+| 2.51 | `oidc_proxy`: a full browser-shape authorization-code flow against live Keycloak yields a bearer the container accepts on a real tool call | deterministic/realidp/idp/test_oidc_proxy_code_flow.py | `test_authorization_code_flow_yields_a_working_bearer` | new | important | The realidp counterpart of 2.46/2.47 (fixture-issuer coverage) — proves the same mediation against a real IdP, not a stub |
+| 2.52 | `oidc_proxy`: the issued bearer is the **container's** (HS256, `iss`/`aud` name the container, carries `jti`), not Keycloak's | deterministic/realidp/idp/test_oidc_proxy_code_flow.py | `test_issued_bearer_is_the_containers_not_keycloaks` | new | important | Keycloak's own tokens are RS256; the container's are HS256 — a real check that mediation, not passthrough, happened |
+| 2.53 | `oidc_proxy`: a direct password-grant Keycloak token — the one that passes 2.38 under `jwks` — is rejected here | deterministic/realidp/idp/test_oidc_proxy_code_flow.py | `test_password_grant_keycloak_token_is_rejected_in_proxy_mode` | new | important | The mode's defining behaviour, and the reason the existing lane couldn't cover it without new machinery |
 
 ### Demo deliverables — inbound auth
 
@@ -561,7 +611,7 @@ gate (what infra the test needs), not a section marker.
 > tool (`KDBAI_DB_OUTBOUND_STRATEGY=passthrough`) → OAuth `kdbai-db` ACL check on the propagated
 > `tenant`/`groups` claims. KA.8/KA.9 exercise `service_account` instead — see below.
 >
-> **Setup:** `docker compose --profile backends up -d` (needs `docker login registry.gitlab.com` +
+> **Setup:** `docker compose --profile backends up -d` (needs `docker login portal.dl.kx.com` +
 > `KDB_LICENSE_B64`), `uv run keycloak_setup.py keycloak_config.json`, `uv run python seed.py`
 > (one-time database + grant creation), fill `envs/.env.kdbai` from `.env.kdbai.example`. Run with
 > `just test-kdbai`. All tests are dual-marked `realidp` + `kdbai`.

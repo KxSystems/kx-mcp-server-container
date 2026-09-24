@@ -14,7 +14,7 @@ This guide explains how to configure GitHub Copilot in VS Code with the KDB-X MC
 
 ## Overview
 
-GitHub Copilot in VS Code supports Model Context Protocol (MCP) servers (available since VS Code 1.102). This configuration allows you to use the KDB-X MCP Server directly with GitHub Copilot Chat, enabling natural language interactions with your KDB-X database.
+GitHub Copilot in VS Code supports Model Context Protocol (MCP) servers (available since VS Code 1.102). This guide wires up the KDB-X MCP Server so you can query your KDB-X database from GitHub Copilot Chat in plain language.
 
 ## Prerequisites
 
@@ -245,7 +245,7 @@ The KDB-X MCP server provides resources that can be added as context to your cha
 
 ### Accessing MCP Prompts
 
-The KDB-X MCP server provides pre-defined prompts for common tasks. Prompts are reusable workflows that guide Copilot through specific operations. Unlike tools, prompts are not automatically visible in the UI and must be explicitly accessed.
+The KDB-X MCP server provides pre-defined prompts for common tasks: reusable workflows that guide Copilot through specific operations. Unlike tools, prompts aren't automatically visible in the UI, so you have to access them explicitly.
 
 1. In the Copilot Chat input field, type `/` followed by the prompt name in this format:
    ```

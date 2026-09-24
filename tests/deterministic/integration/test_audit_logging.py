@@ -94,3 +94,48 @@ def test_audit_line_carries_authenticated_subject_over_the_wire(tmp_path, keypai
     assert fields["action"] == "tool_invoke"
     assert fields["target"] == "example_whoami"
     assert fields["outcome"] == "ok"
+
+
+def test_denied_bearer_emits_authenticate_audit_over_the_wire(tmp_path, keypair, mint, spawn_container):
+    """A rejected bearer is an access decision the dispatch audit can never record — the 401 ends
+    the request before dispatch — so the verifier records it. Over a real subprocess + HTTP so the
+    whole chain (SDK bearer backend → wrapped verify_token → kx_mcp.audit → configure_logging) is
+    exercised, not just the wrapper."""
+    import httpx
+
+    _, pub = keypair
+    pub_path = tmp_path / "public.pem"
+    pub_path.write_text(pub)
+    url, proc = spawn_container(
+        KX_MCP_AUTH="static",
+        KX_MCP_AUTH_PUBLIC_KEY_PATH=str(pub_path),
+        KX_MCP_AUTH_ISSUER=ISSUER,
+        KX_MCP_AUTH_AUDIENCE=AUDIENCE,
+    )
+
+    response = httpx.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {mint(exp_delta=-10, client_id='svc-1')}",
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        },
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        timeout=10,
+    )
+    assert response.status_code == 401
+
+    proc.terminate()
+    try:
+        out, _ = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate()
+
+    fields = _parse_audit_line(out)  # exactly one audit line: the denial, no dispatch happened
+    assert fields["action"] == "authenticate"
+    assert fields["target"] == "static"
+    assert fields["outcome"] == "denied"
+    assert fields["error"] == "invalid_token"
+    assert fields["reason"] == "expired"
+    assert fields["claimed_sub"] == "svc-1"

@@ -11,8 +11,8 @@ service client has been provisioned, so `kdbai_service_account_container_url` sk
 
 | Marker | Command | IdP | Infra |
 |---|---|---|---|
-| `@pytest.mark.realidp` + `@pytest.mark.kdbai` | `just test-kdbai` | Keycloak (local) | Keycloak + Postgres + registry-gated `kdbai-db` + `seed.py` |
-| `@pytest.mark.realidp` + `@pytest.mark.kdbai` | `just test-kdbai-entra` | Entra ID (public) | registry-gated `kdbai-db` only + `seed.py` |
+| `@pytest.mark.realidp` + `@pytest.mark.kdbai` | `just test-kdbai` | Keycloak (local) | Keycloak + Postgres + registry-gated (portal.dl.kx.com) `kdbai-db` + `seed.py` |
+| `@pytest.mark.realidp` + `@pytest.mark.kdbai` | `just test-kdbai-entra` | Entra ID (public) | registry-gated (portal.dl.kx.com) `kdbai-db` only + `seed.py` |
 
 Inbound-auth tests (2.38–2.41) live at `idp/test_inbound_auth.py` and run under
 `just test-keycloak` / `just test-entra`.
@@ -21,9 +21,11 @@ Inbound-auth tests (2.38–2.41) live at `idp/test_inbound_auth.py` and run unde
 
 ## Quick start — Keycloak
 
-**Prerequisites:** `docker login registry.gitlab.com` (the `kdbai-db` image is registry-gated
-there — if that login doesn't work for you, try whichever internal registry mirror you have
-access to) and a KDB-X license (`KDB_LICENSE_B64`).
+**Prerequisites:** `docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>` (the
+`kdbai-db` image is registry-gated there — sign in at portal.dl.kx.com, generate a bearer token
+under your username → Token Management; see
+[the KDB.AI docs](https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image))
+and a KDB-X license (`KDB_LICENSE_B64`).
 
 All commands below run from the **repo root** (the workspace root — where the `.justfile` with
 `just test-kdbai` and friends lives).
@@ -62,9 +64,10 @@ just test-kdbai
 
 ## Quick start — Entra ID
 
-**Prerequisites:** `docker login registry.gitlab.com` (the `kdbai-db` image is registry-gated
-there — if that login doesn't work for you, try whichever internal registry mirror you have
-access to), a KDB-X license, and a completed `entra_setup.py` run (see
+**Prerequisites:** `docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>` (the
+`kdbai-db` image is registry-gated there — see
+[the KDB.AI docs](https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image)),
+a KDB-X license, and a completed `entra_setup.py` run (see
 [`setup/entra/README.md`](../setup/entra/README.md#quick-start) for first-time setup) — that run
 is what populates `envs/.env.entra`, which step 2 below sources. **Before running it, you must
 manually fill in `ENTRA_TENANT_ID`/`ENTRA_CLIENT_ID`/`ENTRA_CLIENT_SECRET` and the three

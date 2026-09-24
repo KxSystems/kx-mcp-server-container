@@ -13,13 +13,13 @@ uv add kx-mcp-core kx-mcp-kdbx        # from PyPI
 
 > **On PyPI as a pre-release.** `0.5.0b1` is published as a PEP 440 pre-release, so an unpinned
 > install resolves it only while no final release exists — pin `kx-mcp-core==0.5.0b1` if you need
-> that exact version. Final releases (`0.4.0` and earlier) are on the internal KX Nexus; see the
-> [deployment guide](../../docs/deployment.md#quickstart--three-ways-to-run-it) for either index.
+> that exact version. See the
+> [deployment guide](https://github.com/KxSystems/kx-mcp-server-container/blob/main/docs/deployment.md#quickstart--three-ways-to-run-it).
 
 ## What's in the box
 
 - **`make_parent(name, auth=None)`** — builds the parent server; inbound auth
-  (`KX_MCP_AUTH`: `unset`/`static`/`jwks`/`entra`) and the audit middleware attach here.
+  (`KX_MCP_AUTH`: `unset`/`static`/`jwks`/`oidc_proxy`/`entra`) and the audit middleware attach here.
 - **`mount_bundle` / `try_mount_bundle`** — mount a bundle's `build_server()` under a namespace;
   the `try_` variant disables an unreachable backend instead of crashing the container.
 - **The `kx-mcp` launcher** — the zero-code path: `kx-mcp --bundles kdbx,kdbai` (a bundle named
@@ -46,10 +46,14 @@ uvx --from kx-mcp-core --with kx-mcp-kdbx kx-mcp --bundles kdbx
 
 ## Documentation
 
-The full docs live in the `kx-mcp-server-container` repository, under `docs/`: the deployment guide,
-the auth reference (inbound modes, outbound strategies, authorization), and the extender guide for
-writing your own bundle — plus a reference downstream build (`demos/extending/`) showing a standalone
-project that assembles a server from these wheels.
+The full docs live in the [`kx-mcp-server-container`](https://github.com/KxSystems/kx-mcp-server-container)
+repository, under `docs/`: the [deployment guide](https://github.com/KxSystems/kx-mcp-server-container/blob/main/docs/deployment.md),
+the [auth reference](https://github.com/KxSystems/kx-mcp-server-container/blob/main/docs/auth.md)
+(inbound modes, outbound strategies, authorization), and the
+[extender guide](https://github.com/KxSystems/kx-mcp-server-container/blob/main/docs/extending.md)
+for writing your own bundle — plus a reference downstream build
+([`demos/extending/`](https://github.com/KxSystems/kx-mcp-server-container/tree/main/demos/extending))
+showing a standalone project that assembles a server from these wheels.
 
 All workspace packages version in lockstep from release tags — pin `kx-mcp-core` and your bundles
 to the same version.

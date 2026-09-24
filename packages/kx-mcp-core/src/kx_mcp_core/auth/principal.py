@@ -23,3 +23,16 @@ def current_principal() -> Optional[AccessToken]:
     except Exception:
         # No auth configured / no token on this request — anonymous, not an error.
         return None
+
+
+def subject_from(token: Optional[AccessToken]) -> str:
+    """The audited/authorized identity of ``token``: ``sub`` claim → client id → ``"anonymous"``.
+
+    One derivation, deliberately shared. The ``@authorize`` capability check and the audit
+    middleware must name the *same* subject: for any user token ``sub`` is the human and
+    ``client_id``/``azp`` is the app, so two independent derivations meant the decision was made
+    about one identity while the audit line recorded another — leaving the record unable to answer
+    "who was granted this?". Import this rather than re-spelling the precedence.
+    """
+    claims = getattr(token, "claims", None) or {}
+    return claims.get("sub") or (getattr(token, "client_id", None) if token else None) or "anonymous"

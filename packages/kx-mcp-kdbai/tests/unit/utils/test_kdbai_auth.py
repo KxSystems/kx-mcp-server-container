@@ -310,6 +310,249 @@ def test_passthrough_caches_per_principal(mocker):
     kdbai.cleanup_kdbai_client()
 
 
+def test_no_principal_passthrough_forwards_nothing(mocker):
+    """REGRESSION, reframed (see mcp-container/adversarial-review-2026-08.md § kdb.ai backend).
+
+    This was written as "the raw `Authorization` header is forwarded unverified as the KDB.AI
+    credential", filed HIGH / live-confirmed. It was neither, and the original test only failed
+    because it mocked `get_http_headers` to return a header the real function never returns:
+    `authorization` is in that function's DEFAULT exclude set, so the fallback branch was dead code
+    on every fastmcp this package supports. Mocking away the dependency under test manufactured the
+    vulnerability.
+
+    So this now asserts the contract against the REAL `get_http_headers`: with no validated
+    principal there is no bearer, full stop. The dead branch is gone — repairing it with
+    `include_all=True` is what would have created the bug, and it would have cached the resulting
+    session under the same `(config, None)` key that service_account and anonymous share.
+    """
+    assert kdbai._incoming_bearer(None) is None
+
+    # Belt and braces: even with a live-looking header dict, nothing reads it any more.
+    mocker.patch(
+        "fastmcp.server.dependencies.get_http_headers",
+        return_value={"authorization": "Bearer RAW-UNVALIDATED-TOKEN"},
+    )
+    assert kdbai._incoming_bearer(None) is None
+
+
+def test_passthrough_without_inbound_auth_is_refused_at_startup():
+    """The real gap the finding above was reaching for.
+
+    `passthrough` forwards the *validated* inbound principal's bearer, so with `KX_MCP_AUTH` unset
+    there is never a principal and never a bearer — every call would open an anonymous session, and
+    if the KDB.AI server permits anonymous access (a supported posture) that silently defeats the
+    whole point of configuring passthrough while looking identical in the logs to a legitimately
+    anonymous deployment. Nothing validated the combination before.
+    """
+    cfg = KDBAIConfig(mode="qipc", outbound_strategy="passthrough")
+    with pytest.raises(ValueError, match="requires inbound auth"):
+        kdbai.require_validated_passthrough(cfg, auth_mode="unset")
+    with pytest.raises(ValueError, match="requires inbound auth"):
+        kdbai.require_validated_passthrough(cfg, auth_mode="")
+
+    kdbai.require_validated_passthrough(cfg, auth_mode="jwks")  # must not raise
+    # Other strategies do not depend on an inbound principal, so they are unaffected.
+    kdbai.require_validated_passthrough(
+        KDBAIConfig(mode="qipc", outbound_strategy="service_account"), auth_mode="unset"
+    )
+
+
+def test_authenticated_principal_with_no_forwardable_bearer_is_refused_not_anonymous(mocker):
+    """A validated principal carrying no forwardable bearer must be REFUSED, not silently
+    downgraded to an anonymous session.
+
+    NARROW by construction: FastMCP's `AccessToken.token` is a required plain `str`, so none of the
+    auth providers this repo ships can produce this shape — it matters for a third-party
+    `AuthProvider` that withholds the raw token while returning an otherwise-valid principal. Kept
+    as a defensive-path regression, not a claim of production reachability. Distinct from
+    `test_no_principal_passthrough_forwards_nothing`, which covers the reachable
+    no-principal-at-all case.
+
+    kdb-x's `_bind_principal` guards the equivalent case by leaving the handle unbound so q's
+    default-deny catches it; kdb.ai had no backstop at all.
+    """
+    kdbai.cleanup_kdbai_client()
+    session = mocker.patch("kdbai_client.Session", side_effect=lambda *a, **k: mocker.Mock())
+
+    class _P:
+        subject = None
+        client_id = "shared-client"
+        token = None
+        claims = {"sub": "alice", "iss": "https://idp"}
+
+    mocker.patch.object(kdbai, "_current_principal", return_value=_P())
+    cfg = KDBAIConfig(mode="qipc", outbound_strategy="passthrough")
+
+    # A specific error, not a bare `Exception` — which would also have passed on a typo in this test.
+    with pytest.raises(ValueError, match="no bearer to forward"):
+        kdbai.get_kdbai_client(cfg)
+    session.assert_not_called()  # no session may be opened at all
+
+    kdbai.cleanup_kdbai_client()
+
+
+def test_one_principals_connection_error_does_not_disrupt_another_principals_session(mocker):
+    """cleanup_kdbai_client() clears the ENTIRE _session_cache, not just the failing principal's
+    entry. One principal's transient connection error must not force every other concurrently
+    -active principal into a full reconnect."""
+    kdbai.cleanup_kdbai_client()
+    principals = {"alice": _fake_principal("alice", "tok-a"), "bob": _fake_principal("bob", "tok-b")}
+    current = {"who": "bob"}
+    mocker.patch.object(kdbai, "_current_principal", side_effect=lambda: principals[current["who"]])
+
+    bob_client = mocker.Mock()
+    bob_client.database.return_value.table.return_value = "bobs-table"
+    alice_client = mocker.Mock()
+    alice_client.database.return_value.table.side_effect = Exception("Error during creating connection")
+    clients = {"alice": alice_client, "bob": bob_client}
+    mocker.patch.object(kdbai, "_open_session", side_effect=lambda cfg, bearer=None: clients[current["who"]])
+
+    cfg = KDBAIConfig(mode="qipc", outbound_strategy="passthrough")
+
+    current["who"] = "bob"
+    kdbai.get_table("t", config=cfg)  # bob warms a healthy cached session
+    bob_key = (cfg, kdbai._principal_key(principals["bob"]))
+    assert bob_key in kdbai._session_cache
+
+    current["who"] = "alice"
+    with pytest.raises(Exception):
+        kdbai.get_table("t", config=cfg)  # alice's connection error triggers the global nuke
+
+    assert bob_key in kdbai._session_cache, "bob's healthy session must survive alice's connection error"
+    kdbai.cleanup_kdbai_client()
+
+
+def test_session_cache_has_a_bound(mocker):
+    """_session_cache is a bare dict with no size cap and no eviction outside a full clear —
+    unlike kdb-x's connection cache (capped by @lru_cache), this one grows forever under
+    passthrough with many distinct principals."""
+    kdbai.cleanup_kdbai_client()
+    mocker.patch("kdbai_client.Session", side_effect=lambda *a, **k: mocker.Mock())
+    cfg = KDBAIConfig(mode="qipc", outbound_strategy="passthrough")
+
+    for i in range(200):
+        p = _fake_principal(f"user{i}", f"tok{i}")
+        mocker.patch.object(kdbai, "_current_principal", return_value=p)
+        kdbai.get_kdbai_client(cfg)
+
+    assert len(kdbai._session_cache) <= 128, "session cache must be bounded, not grow without limit"
+    kdbai.cleanup_kdbai_client()
+
+
+def test_concurrent_connection_errors_perform_one_coordinated_recovery(mocker):
+    """REGRESSION (see mcp-container/adversarial-review-2026-08.md § kdb.ai backend).
+
+    Recovery had no coordination or locking, so N concurrent callers each hitting a connection error
+    independently triggered their OWN full cache+token clear — compounding under exactly the load
+    conditions (a real outage) the backend can least absorb. A generation counter now means the
+    callers who lose the race see that someone has already recovered and skip their own.
+
+    Asserts against `_evict_session` — the actual per-cache-key action `_recover` performs exactly
+    once for the caller that wins the generation race — rather than `cleanup_kdbai_client`, which the
+    fixed recovery path no longer calls at all (that global nuke is precisely the earlier defect
+    `_recover`'s scoped eviction replaced; a version of this test that patched `cleanup_kdbai_client`
+    would pass even with the generation gate deleted, since the count it watches would trivially stay
+    at zero either way).
+
+    A SECOND barrier sits inside `.table()`'s failure, so all 20 threads are guaranteed to raise their
+    exception at the same instant — each having already captured the SAME `_recovery_generation` value
+    at the top of `get_table`, before any of them could have incremented it. Without that barrier, the
+    GIL can simply run one thread's entire open-fail-recover-retry-succeed cycle to completion before
+    a second thread is even scheduled, which — with a `bad_client` that stays broken forever — makes
+    `calls["n"] == 1` pass by accident (only one thread ever actually experiences a failure) regardless
+    of whether the generation gate is doing anything at all; confirmed by deliberately deleting the
+    gate and watching that version of this test still pass. With the second barrier, every one of the
+    20 threads reaches `_recover` with an identical captured generation, so the assertion is exercising
+    the gate itself: with it, lock ordering lets exactly one thread through and the rest see a
+    generation mismatch; with it deleted, all 20 would call `_evict_session` unconditionally."""
+    import threading
+
+    kdbai.cleanup_kdbai_client()
+    mocker.patch.object(kdbai, "_current_principal", return_value=None)
+    fail_barrier = threading.Barrier(20)
+    bad_client = mocker.Mock()
+
+    def _fail(*a, **k):
+        fail_barrier.wait()  # hold every caller here until all 20 are about to raise together
+        raise Exception("Error during creating connection")
+
+    bad_client.database.return_value.table.side_effect = _fail
+    mocker.patch.object(kdbai, "_open_session", return_value=bad_client)
+
+    calls = {"n": 0}
+    lock = threading.Lock()
+    real_evict = kdbai._evict_session
+
+    def _counting_evict(cache_key):
+        with lock:
+            calls["n"] += 1
+        real_evict(cache_key)
+
+    mocker.patch.object(kdbai, "_evict_session", side_effect=_counting_evict)
+    cfg = KDBAIConfig(mode="qipc", outbound_strategy="passthrough")
+    start_barrier = threading.Barrier(20)
+
+    def _go():
+        start_barrier.wait()
+        try:
+            kdbai.get_table("t", config=cfg)
+        except Exception:
+            pass
+
+    threads = [threading.Thread(target=_go) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert calls["n"] == 1, f"expected exactly one coordinated eviction, got {calls['n']}"
+    real_evict((cfg, None))
+
+
+def test_invalidate_is_called_when_kdb_ai_rejects_the_service_account_token(mocker):
+    """invalidate() is never reached from get_table's retry path — that path only matches
+    'Error during creating connection', not an auth rejection. A revoked/rejected service-account
+    token must be purged so the next call re-mints, not retried unchanged."""
+    import time
+
+    kdbai.cleanup_kdbai_client()
+    kdbai_auth.cleanup_token_managers()
+    cfg = _cfg()
+    mgr = kdbai_auth.get_token_manager(cfg)
+    mgr._token = "stale-token"
+    mgr._expiry = time.time() + 3600  # not expired by the manager's own clock
+
+    bad_client = mocker.Mock()
+    bad_client.database.return_value.table.side_effect = Exception("401 Unauthorized: token rejected")
+    mocker.patch.object(kdbai, "_open_session", return_value=bad_client)
+
+    with pytest.raises(Exception):
+        kdbai.get_table("t", config=cfg)
+
+    assert kdbai_auth.get_token_manager(cfg)._token != "stale-token"
+    kdbai.cleanup_kdbai_client()
+    kdbai_auth.cleanup_token_managers()
+
+
+def test_nonpositive_expires_in_is_clamped_so_the_token_still_caches(mocker):
+    """REGRESSION (see mcp-container/adversarial-review-2026-08.md § kdb.ai backend).
+
+    `expires_in <= 0` made the freshness check (`_now() < expiry - buffer`) unsatisfiable, so a
+    fresh token was minted on EVERY call instead of being cached — a misconfigured or hostile IdP
+    turned the container into a loop hammering that endpoint. Any lifetime at or below the freshness
+    buffer is now clamped to the default, with a warning naming the reported value."""
+    kdbai_auth.cleanup_token_managers()
+    cfg = _cfg()
+    ex = _patch_exchange(mocker, return_value=_cred("tok", expires_in=0))
+    mgr = kdbai_auth.get_token_manager(cfg)
+
+    for _ in range(5):
+        mgr.get_token()
+
+    assert ex.call_count == 1, f"expected the token to be cached, got {ex.call_count} mint calls"
+    kdbai_auth.cleanup_token_managers()
+
+
 # --- reconnect-driven token re-mint (the kdb.ai self-heal) --------------------------------------
 #
 # KDB.AI caches a stateful `Session`, so its recovery path is reconnect-and-remint rather than a
@@ -323,20 +566,52 @@ def test_passthrough_caches_per_principal(mocker):
 
 
 def test_get_table_reconnects_on_connection_error_and_retries_once(mocker):
-    """get_table's existing reconnect branch: a connection error triggers cleanup + one retry."""
+    """get_table's reconnect branch: a connection error evicts and retries exactly once.
+
+    Recovery now evicts only the FAILING `(config, principal)` entry, where it used to call
+    `cleanup_kdbai_client()` and clear every principal's session plus every backend's cached token.
+    So this asserts the scoped eviction, not the global nuke it used to assert — the change is the
+    fix, not a relaxation. `test_one_principals_connection_error_does_not_disrupt_another_principals_session`
+    is the test that pins why it matters.
+    """
     kdbai.cleanup_kdbai_client()
     working_client = mocker.Mock()
     get_client = mocker.patch.object(
         kdbai, "get_kdbai_client",
         side_effect=[Exception("Error during creating connection"), working_client],
     )
-    cleanup = mocker.patch.object(kdbai, "cleanup_kdbai_client")
+    evict = mocker.patch.object(kdbai, "_evict_session")
+    nuke = mocker.patch.object(kdbai, "cleanup_kdbai_client")
 
     table = kdbai.get_table("docs", "mydb", KDBAIConfig())
 
     assert table is working_client.database.return_value.table.return_value
-    cleanup.assert_called_once()
+    evict.assert_called_once()
+    nuke.assert_not_called()  # recovery must not clear every principal's session
     assert get_client.call_count == 2
+
+
+def test_get_table_purges_the_token_on_an_auth_rejection(mocker):
+    """REGRESSION (see mcp-container/adversarial-review-2026-08.md § kdb.ai backend).
+
+    `ServiceAccountTokenManager.invalidate()` was dead production code: the retry path matched only
+    the literal `"Error during creating connection"`, so a token the KDB.AI server *rejects* — revoked,
+    or expired on an already-live cached session — was replayed on every call until the process
+    restarted. An auth-shaped failure now purges that config's token so the next call re-mints.
+    """
+    kdbai.cleanup_kdbai_client()
+    working_client = mocker.Mock()
+    mocker.patch.object(
+        kdbai, "get_kdbai_client",
+        side_effect=[Exception("401 Unauthorized: token rejected"), working_client],
+    )
+    mocker.patch.object(kdbai, "_evict_session")
+    manager = mocker.Mock()
+    mocker.patch.object(kdbai, "get_token_manager", return_value=manager)
+
+    kdbai.get_table("docs", "mydb", _cfg())
+
+    manager.invalidate.assert_called_once()
 
 
 def test_get_table_non_connection_error_is_not_retried(mocker):

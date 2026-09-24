@@ -1,6 +1,6 @@
 # kx-mcp-kdbai — KDB.AI backend
 
-The KDB.AI backend extension (bundle) for the [KX MCP composition container](../../README.md). It
+The KDB.AI backend extension (bundle) for the [KX MCP composition container](https://github.com/KxSystems/kx-mcp-server-container). It
 exposes database/table introspection, structured query, and vector + hybrid search over a KDB.AI
 service via the [`kdbai-client`](https://pypi.org/project/kdbai-client/) SDK, and is packaged as a
 standard container bundle: a package exposing `build_server() -> FastMCP`, mounted under the `kdbai`
@@ -35,11 +35,11 @@ bundle has no standalone server of its own — `build_server()` just returns a c
 
 ## KDB.AI setup
 
-Start (or point at) a KDB.AI Server, then configure the endpoint via `KDBAI_DB_*` (below). Run the
-container with this bundle to perform its eager mount-time pre-flight. Static credentials and
-`service_account` open a real SDK session; `passthrough` has no caller token at startup and therefore
-checks socket reachability only. A failed pre-flight disables this bundle while the parent container
-continues serving any healthy bundles:
+Start (or point at) a KDB.AI Server, then configure the endpoint via `KDBAI_DB_*` (below); running the
+container with this bundle performs its eager mount-time pre-flight. Static credentials and
+`service_account` open a real SDK session, while `passthrough` has no caller token at startup and so
+checks socket reachability only. A failed pre-flight disables this bundle, and the parent container
+keeps serving any healthy ones:
 
 ```bash
 uv run kx-mcp --bundles kdbai   # connects to 127.0.0.1:8082 (qipc) by default
@@ -87,7 +87,10 @@ For a KDB.AI server running `AUTH_TYPE=oauth`, set `KDBAI_DB_OUTBOUND_STRATEGY` 
 - **`passthrough`** — the bundle forwards the **inbound caller's** validated bearer as the connection
   credential, so the KDB.AI server's ACL enforces on the *end user's* `tenant`/`groups`. Each principal
   gets its own cached `Session` (keyed on the `sub` claim), so users on one OAuth client never share a
-  connection.
+  connection. **Requires inbound auth** (`KX_MCP_AUTH`): the forwarded bearer is the *validated*
+  principal's token and nothing else — never a raw `Authorization` header — so with inbound auth unset
+  there would be no principal, no bearer, and every call would quietly open an anonymous session.
+  That combination is refused at startup rather than allowed to look like it works.
 
 Both strategies work in **qipc** (bearer as the connection password) and **rest** (bearer handed to
 the SDK's file-backed `JWTTokenManager` via a temp `external_token` oauth config). Leave
@@ -132,7 +135,7 @@ To run the committed lane:
 
 ```bash
 cd tests/deterministic/realidp/setup/keycloak
-docker login registry.gitlab.com
+docker login portal.dl.kx.com -u <portal-email> -p <bearer-token>
 mkdir -p kdbai-data acl-data && chmod 777 kdbai-data acl-data   # gitignored; kdbai-db runs as 'nobody'
 KDB_LICENSE_B64=$(base64 ~/.kx/kc.lic) docker compose --profile backends up -d   # KDBX license (not KXAI)
 uv run keycloak_setup.py keycloak_config.json
@@ -143,12 +146,14 @@ cp tests/deterministic/realidp/envs/.env.kdbai.example \
 just test-kdbai
 ```
 
-Needs `docker login registry.gitlab.com` + a kdb-x license. Uses `network_mode: host` (Linux-ism;
-worked under colima). For a portable setup, replace with explicit port-maps + `host.docker.internal`.
+Needs `docker login portal.dl.kx.com` (bearer token from
+[the KDB.AI docs](https://code.kx.com/kdbai/latest/gettingStarted/kdb-ai-server-setup.html#get-the-kdbai-docker-image))
++ a kdb-x license. Uses `network_mode: host` (Linux-ism; worked under colima). For a portable setup,
+replace with explicit port-maps + `host.docker.internal`.
 
 For the **agent-driven demo** (Claude Code as the MCP client, two personas, ACL contrast) and the
 **native discovery proof** (RFC 9728 → DCR → auth-code browser flow with no pre-injected token),
-see [`demos/claude-code-live-kdbai/`](../../demos/claude-code-live-kdbai/).
+see [`demos/claude-code-live-kdbai/`](https://github.com/KxSystems/kx-mcp-server-container/tree/main/demos/claude-code-live-kdbai).
 
 ## Configure embeddings
 
@@ -158,10 +163,10 @@ SentenceTransformers); add your own by subclassing `EmbeddingProvider` in
 `src/kx_mcp_kdbai/utils/embeddings.py` and decorating it with `@register_provider`, then map your
 database/table rows in the CSV. Set any required API keys (e.g. `OPENAI_API_KEY`) in the environment.
 
-These are call-time prerequisites, not registration-time feature gates: the search tools remain
-visible. Similarity search additionally needs an accessible database/table and a matching dense
-vector index. Hybrid search needs both dense and sparse indexes plus the configured sparse
-tokenizer/model. Missing configuration produces a tool error to fix; it does not disable the bundle.
+These are call-time prerequisites, not registration-time feature gates, so the search tools stay
+visible either way. Similarity search additionally needs an accessible database/table and a matching
+dense vector index, while hybrid search needs both dense and sparse indexes plus the configured
+sparse tokenizer/model. Missing configuration produces a tool error to fix, not a disabled bundle.
 
 ## Capabilities
 

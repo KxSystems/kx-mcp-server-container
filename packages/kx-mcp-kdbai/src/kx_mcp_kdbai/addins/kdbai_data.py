@@ -2,7 +2,9 @@ import logging
 from typing import Optional, Dict, Any, List
 from fastmcp import Context
 from fastmcp.tools import tool
+from kx_mcp_core import tool_result
 from kx_mcp_kdbai.utils.embeddings import get_provider
+from kx_mcp_kdbai.utils.observe import call, record_result_rows
 from kx_mcp_kdbai.utils.embeddings_helpers import get_embedding_config
 from kx_mcp_kdbai.utils.kdbai import get_table, config_from_ctx
 from kx_mcp_kdbai.utils.filters import parse_temporal_filters
@@ -29,7 +31,7 @@ def normalize_result(df: pd.DataFrame, table)-> Any:
         # convert to dict
     return df.to_dict('records') if hasattr(df, 'to_dict') else df
 
-async def kdbai_query_data_impl(table_name: str,
+def kdbai_query_data_impl(table_name: str,
                                 database_name: Optional[str] = None,
                                 filters: Optional[List[tuple]] = None,
                                 sort_columns: Optional[List[str]] = None,
@@ -53,8 +55,9 @@ async def kdbai_query_data_impl(table_name: str,
             'limit': limit
         }.items() if v is not None}
 
-        result = table.query(**query_params)
+        result = call("query", table.query, **query_params)
         result = normalize_result(result, table)
+        record_result_rows(len(result))
         return {
             "status": "success",
             "database": database_name,
@@ -110,8 +113,9 @@ async def kdbai_similarity_search_impl( table_name: str,
             }.items() if v is not None}
         }
 
-        result = table.search(**search_params)[0]
+        result = call("search", table.search, **search_params)[0]
         result = normalize_result(result, table)
+        record_result_rows(len(result))
 
         return {
             "status": "success",
@@ -177,8 +181,9 @@ async def kdbai_hybrid_search_impl(table_name: str,
             }.items() if v is not None}
         }
 
-        result = table.search(**search_params)[0]
+        result = call("hybrid_search", table.search, **search_params)[0]
         result = normalize_result(result, table)
+        record_result_rows(len(result))
         return {
             "status": "success",
             "database": database_name,
@@ -200,7 +205,7 @@ async def kdbai_hybrid_search_impl(table_name: str,
 # and returns the function unchanged. Bare names — the container supplies the `kdbai` qualifier via
 # mount(namespace="kdbai"), so the composed tools are `kdbai_query_data` / `kdbai_similarity_search`
 # / `kdbai_hybrid_search` (not double-prefixed).
-@tool
+@tool(annotations={"readOnlyHint": True})
 async def query_data(table_name: str,
                      ctx: Context,
                      database_name: Optional[str] = None,
@@ -231,7 +236,7 @@ async def query_data(table_name: str,
         Dictionary containing query results or error message
 
     """
-    return await kdbai_query_data_impl(
+    return tool_result(kdbai_query_data_impl(
         table_name,
         database_name,
         filters,
@@ -240,10 +245,10 @@ async def query_data(table_name: str,
         aggs,
         limit,
         config=config_from_ctx(ctx)
-    )
+    ))
 
 
-@tool
+@tool(annotations={"readOnlyHint": True})
 async def similarity_search(table_name: str,
                             query: str,
                             vector_index_name: str,
@@ -275,7 +280,7 @@ async def similarity_search(table_name: str,
     Returns:
         Dictionary containing search result.
     """
-    return await kdbai_similarity_search_impl(
+    return tool_result(await kdbai_similarity_search_impl(
         table_name,
         query,
         vector_index_name,
@@ -286,10 +291,10 @@ async def similarity_search(table_name: str,
         group_by,
         aggs,
         config=config_from_ctx(ctx)
-    )
+    ))
 
 
-@tool
+@tool(annotations={"readOnlyHint": True})
 async def hybrid_search(table_name: str,
                         query: str,
                         vector_index_name: str,
@@ -323,7 +328,7 @@ async def hybrid_search(table_name: str,
     Returns:
         Dictionary containing hybrid search result.
     """
-    return await kdbai_hybrid_search_impl(
+    return tool_result(await kdbai_hybrid_search_impl(
         table_name,
         query,
         vector_index_name,
@@ -335,4 +340,4 @@ async def hybrid_search(table_name: str,
         group_by,
         aggs,
         config=config_from_ctx(ctx)
-    )
+    ))

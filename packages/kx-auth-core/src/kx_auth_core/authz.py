@@ -25,12 +25,17 @@ adapter and the backend's own data gate must agree on the same strings by conven
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping, Optional, Protocol, Union, runtime_checkable
 
 # The strategy values that mean "no adapter — route-only allow" (the inbound `unset` precedent):
 # authorization is opt-in, so an unconfigured seam must not regress the zero-config posture.
-_ROUTE_ONLY = frozenset({"", "unset", "none"})
+# Public: the container's `configure_authz` validates a configured mode against this, so the set of
+# modes that mean "no adapter, allow through" must have exactly one definition. Duplicating it in
+# kx-mcp-core would let the two drift silently, and a mode wrongly treated as route-only is an
+# allow-everything.
+ROUTE_ONLY_MODES = frozenset({"", "unset", "none"})
 
 
 @dataclass(frozen=True)
@@ -113,7 +118,7 @@ def decide(request: AuthzRequest, *, strategy: Optional[str]) -> AuthzDecision:
     returning an :class:`AuthzDecision` is passed through with ``obligations`` intact. Either way the
     producing ``adapter`` is stamped, so the caller reads one uniform shape.
     """
-    if not strategy or strategy in _ROUTE_ONLY:
+    if not strategy or strategy in ROUTE_ONLY_MODES:
         return AuthzDecision(allowed=True, adapter=None, reason="no adapter configured (route-only)")
 
     try:
@@ -132,5 +137,12 @@ def decide(request: AuthzRequest, *, strategy: Optional[str]) -> AuthzDecision:
 
     if isinstance(result, AuthzDecision):
         # Pass the decision through (obligations intact), stamping the adapter when it didn't.
-        return result if result.adapter else replace(result, adapter=strategy)
+        # Snapshot obligations on BOTH paths: `replace()` is a shallow copy, so the returned
+        # decision would otherwise share the adapter's own mapping object — an adapter that caches
+        # or extends its payload could mutate a decision a caller already holds (and already acted
+        # on). Deep because obligations nest (`{"entitled": [...], "denied": [...]}`), so a
+        # top-level copy would still share the lists. The self-stamped path needs it too: that one
+        # skips `replace` entirely and was the aliasing case a `replace`-only fix left behind.
+        stamped = result if result.adapter else replace(result, adapter=strategy)
+        return replace(stamped, obligations=deepcopy(stamped.obligations))
     return AuthzDecision(allowed=bool(result), adapter=strategy)

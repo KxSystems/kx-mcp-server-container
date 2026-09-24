@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+import pytest
+
 from kx_auth_core import (
     AUTH_REQUIRED,
     DENIED,
@@ -77,6 +79,70 @@ def test_required_scope_present_is_ok(keypair, mint):
         mint(scope="kdbx.read kdbx.write"), _static(pub, required_scopes=["kdbx.write"])
     )
     assert result.category == OK and result.valid
+
+
+def test_scope_claim_with_non_string_members_does_not_leak_raw_types(keypair, mint):
+    """A list-valued `scope` claim used to be returned VERBATIM, so a broken/hostile issuer's
+    `["a", 1, None]` reached `VerifyResult.scopes` with an int and a None in it. Pinned to ERROR —
+    rejected outright, and named as a malformed *scope claim* so it is never read as a policy
+    refusal.
+
+    ERROR specifically because that is what FastMCP's `JWTVerifier` does with this shape
+    (`AccessToken.scopes` is typed `list[str]`), verified live against the pinned fastmcp. Accepting
+    it here would make `kx auth introspect` report a verdict the container does not enforce — the
+    agreement `tests/deterministic/unit/test_auth_cli_contract.py` exists to guard, and which now
+    parametrizes these hostile shapes explicitly rather than only well-formed ones.
+    """
+    _, pub = keypair
+    result = verify_token(mint(extra_claims={"scope": ["a", 1, None]}), _static(pub))
+    assert result.category == ERROR
+    assert "scope" in (result.reason or "").lower()
+
+
+def test_unhashable_scope_member_yields_a_verdict_not_a_raw_typeerror(keypair, mint):
+    """The required-scopes check does `set(scopes)` OUTSIDE the try/except that turns failures into
+    a verdict, so a `scope` claim containing an unhashable member used to escape `verify_token` as a
+    bare `TypeError: unhashable type: 'list'` — a crash where every other malformed-token path
+    returns a categorised result. Rejecting non-string members means it never gets that far."""
+    _, pub = keypair
+    result = verify_token(
+        mint(extra_claims={"scope": ["a", ["nested"]]}),
+        _static(pub, required_scopes=["kdbx.read"]),
+    )
+    assert result.category == ERROR
+    assert "scope" in (result.reason or "").lower()
+
+
+def test_malformed_scope_claim_still_lets_a_well_formed_scp_win(keypair, mint):
+    """The `scope` -> `scp` fall-through is preserved: a wrong-typed `scope` does not shadow a good
+    `scp`, it only records that the claim was broken. Pinned because the fix threads a status
+    through that loop, and short-circuiting on the first malformed claim would be an easy, silent
+    regression."""
+    _, pub = keypair
+    result = verify_token(
+        mint(extra_claims={"scope": 12345, "scp": ["kdbx.read"]}),
+        _static(pub, required_scopes=["kdbx.read"]),
+    )
+    assert result.category == OK and result.valid
+    assert result.scopes == ["kdbx.read"]
+
+
+def test_non_string_scope_claim_is_distinguishable_from_absent_scope(keypair, mint):
+    """A `scope` claim of the wrong TYPE silently becomes `[]` — identical to a token that
+    legitimately carries no scope. The malformed case must say it is malformed, not reuse the
+    generic 'missing required scopes' reason."""
+    _, pub = keypair
+    result = verify_token(
+        mint(extra_claims={"scope": 12345}), _static(pub, required_scopes=["kdbx.read"])
+    )
+    assert not result.valid
+    assert "malformed scope claim" in (result.reason or "")
+
+    # ...and a well-formed-but-insufficient claim keeps the plain reason, so the two really are
+    # distinguishable. (`mint` defaults to scope="kdbx.read", hence the explicit other scope.)
+    absent = verify_token(mint(scope="some.other.scope"), _static(pub, required_scopes=["kdbx.read"]))
+    assert not absent.valid
+    assert "malformed" not in (absent.reason or "")
 
 
 def test_static_without_key_is_error(keypair, mint):
@@ -219,6 +285,29 @@ def test_jwks_no_kid_multiple_keys_is_error(keypair):
     """No `kid` in the token, JWKS serves MULTIPLE keys -> ambiguous, 'no key ID (kid) in token'."""
     priv, pub = keypair
     with _serve_jwks([_jwk_for(pub, "key-1"), _jwk_for(_gen_unrelated_pub(), "key-2")]) as uri:
+        result = verify_token(_mint_without_kid(priv), _jwks(uri))
+    assert result.category == ERROR
+    assert "multiple keys in JWKS" in result.reason
+
+
+def _jwk_without_kid(pub_pem: str) -> dict:
+    """A JWKS entry with NO `kid` field — what a minimal issuer can legitimately serve."""
+    jwk = _jwk_for(pub_pem, "unused")
+    jwk.pop("kid")
+    return jwk
+
+
+@pytest.mark.parametrize("signer_first", [True, False])
+def test_jwks_multiple_kidless_keys_is_ambiguity_error(keypair, signer_first):
+    """TWO kid-less keys in the JWKS + a kid-less token is ambiguous and must be an ERROR that
+    NAMES the ambiguity — the same verdict as the two-keys-WITH-kids case above. The verdict must
+    not depend on JWKS ordering.
+    """
+    priv, pub = keypair
+    mine = _jwk_without_kid(pub)
+    other = _jwk_without_kid(_gen_unrelated_pub())
+    keys = [mine, other] if signer_first else [other, mine]
+    with _serve_jwks(keys) as uri:
         result = verify_token(_mint_without_kid(priv), _jwks(uri))
     assert result.category == ERROR
     assert "multiple keys in JWKS" in result.reason

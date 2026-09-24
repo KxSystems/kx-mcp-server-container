@@ -2,13 +2,15 @@ import logging
 from typing import Optional, Dict, Any
 from fastmcp import Context
 from fastmcp.tools import tool
+from kx_mcp_core import tool_result
 from kx_mcp_kdbai.utils.kdbai import get_kdbai_client, config_from_ctx
+from kx_mcp_kdbai.utils.observe import call, timed
 from kx_mcp_kdbai.settings import KDBAIConfig
 
 logger = logging.getLogger(__name__)
 
 
-async def list_tables_impl(database_name: Optional[str] = None,
+def list_tables_impl(database_name: Optional[str] = None,
                            config: Optional[KDBAIConfig] = None) -> Dict[str, Any]:
     cfg = config if config is not None else KDBAIConfig()
     try:
@@ -16,7 +18,7 @@ async def list_tables_impl(database_name: Optional[str] = None,
             database_name = cfg.database_name
         client = get_kdbai_client(config)
         db = client.database(database_name)
-        tables = [table.name for table in db.tables]
+        tables = [table.name for table in call("list_tables", lambda: db.tables)]
         return {'database': database_name, 'tables': tables}
     except Exception as e:
         logger.error(f"Error listing tables in database {database_name}: {e}")
@@ -27,7 +29,7 @@ async def list_tables_impl(database_name: Optional[str] = None,
         }
 
 
-async def kdbai_table_info_impl(table_name: str, database_name: Optional[str] = None,
+def kdbai_table_info_impl(table_name: str, database_name: Optional[str] = None,
                                 config: Optional[KDBAIConfig] = None) -> Dict[str, Any]:
     """
         Get comprehensive information about a table including schema and statistics.
@@ -39,11 +41,12 @@ async def kdbai_table_info_impl(table_name: str, database_name: Optional[str] = 
             database_name = cfg.database_name
 
         client = get_kdbai_client(config)
-        table = client.database(database_name).table(table_name)
-        data = table.info()
-        data['schema'] = table.schema
-        if len(table.indexes) > 0:
-            data['indexes'] = table.indexes
+        with timed("table_info"):
+            table = client.database(database_name).table(table_name)
+            data = table.info()
+            data['schema'] = table.schema
+            if len(table.indexes) > 0:
+                data['indexes'] = table.indexes
         return data
     except Exception as e:
         logger.error(f"Error getting table info for {table_name}: {e}")
@@ -56,7 +59,7 @@ async def kdbai_table_info_impl(table_name: str, database_name: Optional[str] = 
 
 # Standalone @tool decorators — bare names; `mount(namespace="kdbai")` yields `kdbai_list_tables`
 # / `kdbai_table_info`.
-@tool
+@tool(annotations={"readOnlyHint": True})
 async def list_tables(ctx: Context, database_name: Optional[str] = None) -> Dict[str, Any]:
     """
     List all tables in the given database.
@@ -69,10 +72,10 @@ async def list_tables(ctx: Context, database_name: Optional[str] = None) -> Dict
         database: name of database
         tables: list of tables in the mentioned database
     """
-    return await list_tables_impl(database_name, config_from_ctx(ctx))
+    return tool_result(list_tables_impl(database_name, config_from_ctx(ctx)))
 
 
-@tool
+@tool(annotations={"readOnlyHint": True})
 async def table_info(table_name: str, ctx: Context, database_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Get comprehensive information about a table including schema and statistics.
@@ -90,4 +93,6 @@ async def table_info(table_name: str, ctx: Context, database_name: Optional[str]
         schema: table schema as list of dictionary. Each item as column name and column type.
         indexes: table indexes as list of dictionary. Each entry is one index information.
     """
-    return await kdbai_table_info_impl(table_name, database_name, config_from_ctx(ctx))
+    return tool_result(
+        kdbai_table_info_impl(table_name, database_name, config_from_ctx(ctx))
+    )

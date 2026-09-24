@@ -9,7 +9,7 @@ from kx_mcp_core.auth import current_principal
 from fastmcp.tools import tool
 
 
-@tool
+@tool(annotations={"readOnlyHint": True})
 def whoami() -> str:
     """Return the authenticated principal's client_id, or 'anonymous' when auth is unset."""
     principal = current_principal()

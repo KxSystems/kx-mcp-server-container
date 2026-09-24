@@ -12,11 +12,39 @@ dependencies = [
     "pyyaml",
     # The shared, fastmcp-free auth core (config contract + verifier) the kx auth CLI also depends on.
     "kx-auth-core",
+    # Observability (both seams opt-in via KX_MCP_METRICS / KX_MCP_TRACING).
+    # prometheus-client builds the metric collectors directly and is imported at metrics-module import
+    # time (the registry + collectors are process-global by design), so it is a hard dep, not an extra.
+    "prometheus-client",
+    # opentelemetry-api backs the no-op tracer TracingMiddleware/get_tracer fall back to when the
+    # `tracing` extra below isn't installed. It already arrives transitively (fastmcp requires
+    # fastmcp-slim[client,server], which requires it), so this adds no new package on any install —
+    # it makes that reliance explicit and owned rather than inherited from fastmcp's own extras.
+    "opentelemetry-api",
+    # Imported directly by the /health route in assembly.py (always present under fastmcp).
+    "starlette",
 ]
+
+# Tracing (KX_MCP_TRACING=otlp) is off by default, and every `opentelemetry` import in
+# observability/tracing.py sits *inside* a function (init_tracing / _get_tracer / _trace), never at
+# module scope — so the package imports and runs fine with the SDK/exporter absent. Keeping those two
+# out of the hard dependency set spares a default install the OTLP exporter's transitive tail
+# (grpcio, protobuf, googleapis-common-protos and friends), which is the bulk of the weight.
+#
+# Without the extra, KX_MCP_TRACING=otlp is non-fatal: init_tracing() catches the ImportError, logs
+# the "install kx-mcp-core[tracing]" hint, and returns False — which assembly.py's make_parent() reads
+# to skip attaching TracingMiddleware, so a dispatch never pays a middleware frame for zero spans.
+[project.optional-dependencies]
+tracing = ["opentelemetry-sdk", "opentelemetry-exporter-otlp"]
 
 [project.scripts]
 # Thin, optional zero-code launcher: `kx-mcp --bundles kdbx,example`
 kx-mcp = "kx_mcp_core.launcher:main"
+
+[project.urls]
+Homepage = "https://github.com/KxSystems/kx-mcp-server-container"
+Repository = "https://github.com/KxSystems/kx-mcp-server-container"
+Changelog = "https://github.com/KxSystems/kx-mcp-server-container/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]

@@ -9,9 +9,11 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from kx_mcp_kdbx.settings import KDBConfig
+from kx_mcp_kdbx.utils.observe import q, timed
 from kx_mcp_kdbx.utils import kdbx as kdbx_utils
 from kx_mcp_kdbx.utils.aimeta import MetadataCache, MetadataDetection, detect_metadata
 from kx_mcp_kdbx.utils.authz_kx_entitlements import consult_data_gate
+from kx_mcp_kdbx.utils.denial import record_denial
 from kx_mcp_kdbx.utils.embeddings_helpers import get_csv_data
 from kx_mcp_kdbx.utils.kdbx import get_kdb_connection
 
@@ -23,10 +25,22 @@ CONTRACT_SCHEMA_URI = "schema://kdbx/metadata/v1"
 CONTRACT_SCHEMA_VERSION = 1
 DEFAULT_PREVIEW_ROWS = 3
 MAX_PREVIEW_ROWS = 100
+
+# Previews are the one remaining PER-TABLE round trip, and nothing bounded the table count: a host
+# with 500 tables meant ~500 sequential `.j.j`-serialised preview queries per uncached call, each
+# parsed in Python. `MAX_PREVIEW_ROWS` capped the rows, never the tables. Tables past this cap still
+# appear in full — name, columns, row count, partitioned flag — they just carry no sample rows, which
+# `live.rowSource == "none"` already expresses, so no contract change. A caller that wants a specific
+# table's sample asks for that table (`table=` requests are never capped).
+MAX_PREVIEW_TABLES = 20
 _INTERNAL_TABLE_SUFFIXES = ("document", "stats", "token")
 
 _ROW_COUNTS = "{.j.j x!@[{count get x};;0Nj] each x}"
 _META = "{.j.j 0!meta x}"
+# One round trip for EVERY un-annotated table's meta, instead of one per table. Same `@[f;;fallback]
+# each` trap idiom as _ROW_COUNTS above, so a single unreadable table yields an empty column list
+# rather than losing the whole batch.
+_META_BATCH = "{.j.j x!@[{0!meta x};;()] each x}"
 _PREVIEW = "{[n;t;d] r:n sublist get t; .j.j ((cols r) except d)#r}"
 _PREVIEW_PARTITIONED = "{[n;t;d] r:.Q.ind[get t;til n]; .j.j ((cols r) except d)#r}"
 
@@ -145,9 +159,19 @@ def _base(detected: MetadataDetection) -> dict[str, Any]:
 def error_document(
     detected: MetadataDetection, message: str, *, status: str = "error"
 ) -> dict[str, Any]:
+    """A schema-valid metadata document reporting a failure, per the v1 response contract.
+
+    A ``permission_denied`` status is *also* stamped with ``stamp_authz_decision``, so a metadata
+    dispatch refused by entitlements is counted ``denied`` rather than ``error`` — the same
+    treatment ``denial_response`` gives a q-side refusal. This matters beyond bookkeeping on the
+    partial-entitlement path: ``consult_data_gate`` records an *allow*-with-obligations there, so
+    without this stamp a document that denies the caller would ride out under that allow.
+    """
     result = _base(detected)
     result["status"] = status
     result["message"] = message
+    if status == "permission_denied":
+        record_denial(message, adapter="kdbx_entitlements")
     return result
 
 
@@ -162,11 +186,18 @@ def is_internal_table_name(name: str) -> bool:
 
 
 def live_table_names(conn) -> list[str]:
-    return [str(_decode(name)) for name in conn.tables(None).py()]
+    with timed("tables"):
+        names = conn.tables(None).py()
+    return [str(_decode(name)) for name in names]
 
 
 def columns_from_meta(conn, table: str) -> list[dict[str, Any]]:
-    rows = _loads(conn(_META, table).py())
+    return _columns_from_meta_rows(_loads(q(conn, "meta", _META, table).py()))
+
+
+def _columns_from_meta_rows(rows) -> list[dict[str, Any]]:
+    """Project one table's `0!meta` rows into contract columns. Shared by the single-table query and
+    the batched one, so the two cannot drift in how they read a meta row."""
     columns = []
     for row in rows:
         column: dict[str, Any] = {"name": row.get("c"), "kdbType": row.get("t")}
@@ -184,7 +215,36 @@ def table_entry_from_meta(conn, table: str) -> dict[str, Any]:
     except Exception as error:
         logger.warning(f"Could not read meta for table '{table}': {error}")
         columns = []
+    return _entry_from_columns(table, columns)
+
+
+def _entry_from_columns(table: str, columns: list[dict[str, Any]]) -> dict[str, Any]:
     return {"name": table, "private": False, "desc": "", "columns": columns}
+
+
+def _batch_columns_from_meta(conn, tables: list) -> dict:
+    """`{table: columns}` for `tables` in ONE round trip; `{}` if the batch itself fails.
+
+    An empty return makes the caller fall back to its per-table path, so a q build that dislikes the
+    batched form degrades in cost, never in correctness.
+    """
+    if not tables:
+        return {}
+    try:
+        batched = _loads(conn(_META_BATCH, tables).py())
+    except Exception as error:
+        logger.warning(f"Could not batch-read meta for {len(tables)} tables: {error}")
+        return {}
+    columns = {}
+    for table in tables:
+        rows = batched.get(table)
+        if not rows:
+            continue  # unreadable table: leave it out so the caller retries it individually
+        try:
+            columns[table] = _columns_from_meta_rows(rows)
+        except Exception as error:
+            logger.warning(f"Could not project meta for table '{table}': {error}")
+    return columns
 
 
 def _vector_columns(table: str, config: KDBConfig) -> list[str]:
@@ -217,8 +277,8 @@ def _live_block(
     query = _PREVIEW_PARTITIONED if table in partitioned else _PREVIEW
     try:
         preview = _loads(
-            conn(
-                query, min(rows, row_count), table, _vector_columns(table, config)
+            q(
+                conn, "preview", query, min(rows, row_count), table, _vector_columns(table, config)
             ).py()
         )
         if preview:
@@ -346,23 +406,38 @@ def build_tables_document(
     partitioned: set[str] = set()
     if visible:
         try:
-            counts = _loads(conn(_ROW_COUNTS, visible).py())
+            counts = _loads(q(conn, "rowcounts", _ROW_COUNTS, visible).py())
         except Exception as error:
             logger.warning(f"Could not read row counts: {error}")
         try:
-            partitioned = {str(_decode(name)) for name in (conn(".Q.pt").py() or [])}
+            partitioned = {str(_decode(name)) for name in (q(conn, "partitioned", ".Q.pt").py() or [])}
         except Exception as error:
             logger.debug(f"Could not read .Q.pt: {error}")
+
+    # One batched meta call for every un-annotated table, rather than one call each.
+    unannotated = [name for name in visible if by_name.get(name) is None]
+    batched_columns = _batch_columns_from_meta(conn, unannotated)
+
+    # Cap the per-table preview leg. `visible` is already deterministic, so the previewed subset is
+    # stable across calls rather than varying run to run.
+    previewable = set(visible[:MAX_PREVIEW_TABLES])
+    if len(visible) > MAX_PREVIEW_TABLES:
+        logger.info(
+            f"{len(visible)} tables visible; sampling rows for the first {MAX_PREVIEW_TABLES}. "
+            "Request a table by name for its sample rows."
+        )
 
     tables = []
     for name in visible:
         annotated = by_name.get(name)
-        entry: dict[str, Any] = (
-            _project_table(annotated)
-            if annotated is not None
-            else table_entry_from_meta(conn, name)
-        )
-        live = _live_block(conn, name, counts, partitioned, preview_rows, cfg)
+        if annotated is not None:
+            entry: dict[str, Any] = _project_table(annotated)
+        elif name in batched_columns:
+            entry = _entry_from_columns(name, batched_columns[name])
+        else:
+            entry = table_entry_from_meta(conn, name)  # batch missed it — read this one directly
+        rows_for_table = preview_rows if name in previewable else 0
+        live = _live_block(conn, name, counts, partitioned, rows_for_table, cfg)
         _reconcile_row_data(entry, live)
         entry["live"] = live
         tables.append(entry)

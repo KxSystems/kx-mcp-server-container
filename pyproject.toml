@@ -5,7 +5,12 @@ description = "KX MCP composition container — a FastMCP 3.x parent that mounts
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "kx-mcp-core",
+    # [tracing] pulls the OpenTelemetry SDK + OTLP exporter, which are an optional extra on
+    # kx-mcp-core (off-by-default seam, lazily imported). The dev/CI environment needs them because
+    # the tracing tests genuinely exercise the seam (in-memory span exporter), so the workspace root
+    # asks for the extra explicitly. Shipped consumers — kx-mcp-kdbx / kx-mcp-kdbai — deliberately
+    # depend on bare "kx-mcp-core", so installing a backend bundle does not drag OTel in.
+    "kx-mcp-core[tracing]",
     "kx-mcp-kdbx",
     "kx-mcp-kdbai",
 ]
@@ -60,6 +65,17 @@ dev = [
     # Used by the realidp/kdbai Keycloak provisioning scripts (keycloak_setup.py) — an ops/setup
     # tool, not a package runtime dep, but `uv run` needs it resolvable from the workspace env.
     "python-keycloak",
+    # jwcrypto is python-keycloak's transitive dependency; the floor is raised here to clear two
+    # newly-published advisories in 1.5.8 (SNYK-PYTHON-JWCRYPTO-19865670 High, -19433200 Medium)
+    # that redden the blocking snyk-test job on every MR. Dev-only: nothing shipped depends on it.
+    # Drop once python-keycloak's own floor passes 1.6.1.
+    "jwcrypto>=1.6.1",
+    # `tomllib` is stdlib only from 3.11, but the declared floor is 3.10. Two metadata tests parse
+    # TOML and used to ModuleNotFoundError at *collection* on 3.10, taking the whole suite down.
+    # tomli is the upstream project tomllib was derived from (identical load/loads API); the marker
+    # means 3.11+ environments never install it. See tests/_toml_compat.py; drop both when the floor
+    # moves to >=3.11.
+    "tomli; python_version < '3.11'",
 ]
 
 [tool.pytest.ini_options]

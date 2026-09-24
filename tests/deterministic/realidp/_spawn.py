@@ -39,7 +39,27 @@ def _wait_until_listening(port: int, proc: subprocess.Popen, timeout: float = 20
     raise RuntimeError("container did not start listening in time")
 
 
-def _spawn_container(bundles: str = "example", extra_env: dict | None = None) -> tuple[str, subprocess.Popen]:
+def _require_port_free(port: int) -> int:
+    """A caller-pinned port must be *ours*. ``_wait_until_listening`` only waits for *something*
+    to accept a connection, so a squatter already on ``port`` would silently be driven by the
+    whole test instead of the container we think we spawned."""
+    with socket.socket() as s:
+        s.settimeout(0.25)
+        if s.connect_ex(("127.0.0.1", port)) == 0:
+            raise RuntimeError(
+                f"127.0.0.1:{port} is already in use. This port is pinned (not auto-selected) "
+                f"because it is baked into a pre-registered redirect URI at the IdP — free it, or "
+                f"pick a different port and update the matching client config, then re-provision."
+            )
+    return port
+
+
+def _spawn_container(
+    bundles: str = "example",
+    extra_env: dict | None = None,
+    *,
+    port: int | None = None,
+) -> tuple[str, subprocess.Popen]:
     """Spawn the MCP container with ``KX_MCP_AUTH=jwks`` → live IdP JWKS URI.
 
     The container is started as a subprocess and returned alongside its URL so that
@@ -58,11 +78,17 @@ def _spawn_container(bundles: str = "example", extra_env: dict | None = None) ->
     for the ``test_discovery_advertised`` test and representative of the HTTP-deployed
     posture.
 
+    ``extra_env`` is merged last, so a caller can already override ``KX_MCP_AUTH`` and every
+    ``KX_MCP_AUTH_*`` key below — that is the seam a non-``jwks`` mode (e.g. ``oidc_proxy``, see
+    ``_spawn_oidc_proxy_container``) uses. ``port`` pins the listen port instead of picking a free
+    one; needed only by a mode whose advertised ``base_url`` must be knowable *before* spawn
+    because it is pre-registered at the IdP.
+
     Returns ``(url, proc)``.
     """
     from realidp.idp.providers.factory import provider_name
 
-    port = _free_port()
+    port = _free_port() if port is None else _require_port_free(port)
 
     if provider_name() == "entra":
         # Read JWKS/issuer/audience from env (written by entra_setup.py / .env.entra).
@@ -124,3 +150,31 @@ def _spawn_container(bundles: str = "example", extra_env: dict | None = None) ->
         raise
 
     return f"http://127.0.0.1:{port}/mcp", proc
+
+
+def _spawn_oidc_proxy_container(
+    *, port: int, bundles: str = "example", fastmcp_home: str | None = None
+) -> tuple[str, subprocess.Popen]:
+    """Spawn the container in ``KX_MCP_AUTH=oidc_proxy`` mode on a **fixed** port (Keycloak only).
+
+    Only what differs from the ``jwks`` spawn needs to be named — the rest (issuer, audience,
+    ``RESOURCE_URL``) is inherited via ``extra_env`` overriding the ``jwks`` defaults:
+      - ``KX_MCP_AUTH_ISSUER``   → ``_build_oidc_proxy`` derives ``config_url`` from it.
+      - ``KX_MCP_AUTH_AUDIENCE`` → the ``aud`` the ``JWTVerifier`` requires on the **upstream**
+        Keycloak token (the mode's contract, not the container-minted one the client receives).
+      - ``KX_MCP_AUTH_RESOURCE_URL`` → ``http://127.0.0.1:{port}``, which is *why* the port must be
+        fixed: it is the ``base_url`` FastMCP advertises and the prefix of the upstream redirect
+        URI ``{base_url}/auth/callback`` pre-registered at Keycloak.
+
+    ``KX_MCP_AUTH_REQUIRED_SCOPES`` is deliberately left unset — see the realidp README for why.
+    ``fastmcp_home`` pins ``FASTMCP_HOME`` so the proxy's Fernet-encrypted OAuth-state store lives
+    in a throwaway directory per test run rather than the developer's real data dir.
+    """
+    extra_env: dict = {
+        "KX_MCP_AUTH": "oidc_proxy",
+        "KX_MCP_AUTH_CLIENT_ID": os.environ.get("KC_PROXY_CLIENT_ID", "kx-mcp-proxy"),
+        "KX_MCP_AUTH_CLIENT_SECRET": os.environ.get("KC_PROXY_CLIENT_SECRET", "kx-mcp-proxy-secret"),
+    }
+    if fastmcp_home:
+        extra_env["FASTMCP_HOME"] = fastmcp_home
+    return _spawn_container(bundles=bundles, extra_env=extra_env, port=port)

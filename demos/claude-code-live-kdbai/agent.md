@@ -63,8 +63,8 @@ Claude Code navigated the full agentic auth chain autonomously:
 7. Container forwarded the bearer to KDB.AI (`passthrough`) — KDB.AI granted access on alice's
    `tenant=quants`, `groups=[trader,viewer]` claims.
 
-No pre-injected token. No hardcoded IdP address in the client config. The container's discovery
-advertisement is the only hint Claude Code needed.
+There was no pre-injected token and no hardcoded IdP address in the client config — the container's
+discovery advertisement was the only hint Claude Code needed.
 
 The deterministic backstop for the ACL result is the committed
 `tests/deterministic/realidp/kdbai/` suite (KA.2 / KA.3): same identity propagation, programmatic

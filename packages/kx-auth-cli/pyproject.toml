@@ -23,6 +23,11 @@ qipc = ["pykx>=4.0.0.b4"]
 # The `kx` umbrella; the `auth` group hosts introspect / login / exchange / assert.
 kx = "kx_auth_cli.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/KxSystems/kx-mcp-server-container"
+Repository = "https://github.com/KxSystems/kx-mcp-server-container"
+Changelog = "https://github.com/KxSystems/kx-mcp-server-container/blob/main/CHANGELOG.md"
+
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"

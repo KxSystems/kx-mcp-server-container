@@ -8,6 +8,10 @@ module-level standalone `@tool` decorator (FastMCP 3.x) attaches discovery metad
 returns the function unchanged; native filesystem discovery (see utils/discovery.py) finds it
 and registers it onto the per-instance server. Read per-call config from the request Context
 (ctx.fastmcp) — never a module global — to stay instance-safe.
+
+Failures go back through `tool_result`, which marks the dispatch `isError: true` while keeping the
+structured payload. That is REQUIRED, not decorative: without it a failed call reaches the host as a
+success and the metrics counter records `outcome="ok"`. See docs/extending.md § Signalling failure.
 """
 
 import logging
@@ -16,6 +20,7 @@ from typing import Dict, Any, List, Optional
 from fastmcp import Context
 from fastmcp.tools import tool
 
+from kx_mcp_core import tool_result
 from kx_mcp_kdbx.utils.kdbx import config_from_ctx, get_kdb_connection
 
 logger = logging.getLogger(__name__)
@@ -35,20 +40,28 @@ async def my_tool_impl(param1: str, param2: int, param3: Optional[List[str]] = N
         # result = conn(f"select from table where condition=`{param1}")  # for in memory tables
 
         results = []
-        
-        # Process and return results
-        return results
-        
+
+        # Process and return results. Status "success" is what tells tool_result this is not a
+        # failure — see the wrapper below.
+        return {"status": "success", "data": results}
+
     except Exception as e:
         logger.error(f"Error in my_tool: {e}")
+        # Return the payload; the @tool wrapper flags it. Put a recovery hint in the message —
+        # "...; call kdbx_describe_tables for valid names" turns a dead end into a next step.
         return {
-            "status": "error", 
-            "message": str(e)
+            "status": "error",
+            "message": str(e),
         }
 
 # Pick a descriptive, BARE tool name — the container supplies the `kdbx` qualifier at
 # mount(namespace="kdbx"). Discovery picks this up automatically; no registration function needed.
-@tool
+# `annotations` are a strong convention, not optional polish: they are behavioural hints a host
+# reads BEFORE invoking, and unset means the host assumes the worst and prompts for what may be a
+# plain read. readOnlyHint for a read, + idempotentHint if retrying is safe, destructiveHint
+# INSTEAD of readOnlyHint if your tool can lose or overwrite data.
+# See docs/extending.md § Tool annotations.
+@tool(annotations={"readOnlyHint": True})
 async def my_tool(param1: str, param2: int, param3: Optional[List[str]] = None,
                   ctx: Context = None) -> Dict[str, Any]:
     """
@@ -65,4 +78,13 @@ async def my_tool(param1: str, param2: int, param3: Optional[List[str]] = None,
     Returns:
         Dict[str, Any]: Description of return value structure
     """
-    return await my_tool_impl(param1, param2, param3, config=config_from_ctx(ctx))
+    # Keep the `-> Dict[str, Any]` annotation above: FastMCP derives the tool's advertised
+    # outputSchema from it, and tool_result's envelope is unwrapped before it reaches the client.
+    return tool_result(await my_tool_impl(param1, param2, param3, config=config_from_ctx(ctx)))
+
+# Instrumenting the inside of a tool? The container already counts, times and spans every dispatch at
+# the boundary, so add to it only for what the boundary cannot see — and instrument the *_impl above,
+# not this wrapper. `from kx_mcp_core import span` for a child span,
+# `from kx_mcp_core.observability import Counter, metric` for a collector of your own; both are inert
+# when observability is off, and neither needs a dependency beyond kx-mcp-core.
+# See docs/extending.md § Observability for bundle authors.

@@ -9,7 +9,7 @@ per-lane marker) and excluded from the default/CI run — `just test` never trig
 
 | Lane | Dir | What it tests | Marker | Recipe |
 |---|---|---|---|---|
-| Inbound auth / Keycloak | `idp/` | Inbound auth 2.38–2.42 (provider-agnostic) | `realidp` | `just test-keycloak` |
+| Inbound auth / Keycloak | `idp/` | Inbound auth 2.38–2.42 (provider-agnostic) + the `oidc_proxy` authorization-code flow 2.51–2.53 (Keycloak-only) | `realidp` | `just test-keycloak` |
 | Inbound auth / Entra | `idp/` (`AUTH_PROVIDER=entra`) | Entra as a second identity provider for the container's inbound path | `realidp` | `just test-entra` |
 | KDB.AI OAuth ACL | `kdbai/` | KDB.AI OAuth qIPC ACL (KA.1–KA.9) | `realidp and kdbai` | `just test-kdbai` |
 | KDB-X identity ferry | `kdbx/` | Validated identity assertion and q-side authorization against a real q process | `realidp and kdbx` | `just test-kdbx` |
@@ -28,7 +28,8 @@ per-lane marker) and excluded from the default/CI run — `just test` never trig
 realidp/
   conftest.py          — shared IdP fixtures: _require_idp (autouse), container_url,
                          personas / token_provider / make_token / *_token
-  _spawn.py            — _free_port, _wait_until_listening, _spawn_container
+  _spawn.py            — _free_port, _wait_until_listening, _spawn_container,
+                         _spawn_oidc_proxy_container (fixed-port oidc_proxy spawn)
   envs/
     .env.keycloak.example
     .env.kdbai.example
@@ -45,12 +46,15 @@ realidp/
     helpers.py         — assert_authenticated, assert_principal_visible, assert_discovery_advertised,
                          assert_rejected_401
     test_inbound_auth.py — @pytest.mark.realidp tests 2.38–2.42 (provider-agnostic)
+    oidc_proxy_driver.py — drives a real authorization-code flow against KX_MCP_AUTH=oidc_proxy
+    test_oidc_proxy_code_flow.py — @pytest.mark.realidp tests 2.51–2.53 (Keycloak-only)
     README.md          — test-by-test detail + expected output (Keycloak + Entra)
 
   setup/               — local infra + IdP provisioning (no Python test code)
     keycloak/
       docker-compose.yaml  — postgres + keycloak + profile-gated kdbai-db (backends profile)
-      keycloak_config.json
+      keycloak_config.json — now also provisions kx-mcp-proxy (proxy_client), a confidential
+                             client with a port-exact redirect URI for the oidc_proxy code flow
       keycloak_setup.py
       seed.py              — operator pre-step: creates databases, tables, and ACL grants
       .gitignore           — kdbai-data/, acl-data/ (volume dirs created at runtime)

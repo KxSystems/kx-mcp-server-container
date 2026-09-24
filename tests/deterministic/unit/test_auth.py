@@ -1,7 +1,8 @@
-"""Inbound-auth verifier seam: unset / static / jwks, plus the audit scaffolding.
+"""Inbound-auth verifier seam: unset / static / jwks / oidc_proxy, plus the audit scaffolding.
 
 Covers:
-- Provider building: unset (None), static (local public key), jwks (remote JWKS endpoint).
+- Provider building: unset (None), static (local public key), jwks (remote JWKS endpoint),
+  oidc_proxy (OAuth-Proxy front door for any OIDC issuer).
 - Claim validation: issuer, audience, scope, expiry, bad signature, kid mismatch.
 - Config binding: KX_MCP_AUTH env var, case normalisation, empty/whitespace → unset.
 - Principal accessor: current_principal() returns None in unset mode; crosses mount boundary
@@ -338,6 +339,141 @@ def test_entra_reads_azure_env_aliases(monkeypatch):
         "env-secret",
         "env-tenant",
     )
+
+
+def test_entra_canonical_env_wins_over_azure_alias(monkeypatch):
+    """Both names exported: the canonical KX_MCP_AUTH_* value wins (AliasChoices is first-match-wins
+    and KX_MCP_AUTH_CLIENT_ID is listed first). Companion to test_entra_reads_azure_env_aliases,
+    which only covers the alias-ONLY case. Pinned so a future reorder of the AliasChoices tuple
+    can't silently flip which app registration the OAuth proxy brokers for."""
+    monkeypatch.setenv("KX_MCP_AUTH", "entra")
+    monkeypatch.setenv("KX_MCP_AUTH_CLIENT_ID", "canonical-client")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "azure-client")
+    monkeypatch.setenv("KX_MCP_AUTH_CLIENT_SECRET", "canonical-secret")
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "azure-secret")
+    monkeypatch.setenv("KX_MCP_AUTH_TENANT_ID", "canonical-tenant")
+    monkeypatch.setenv("AZURE_TENANT_ID", "azure-tenant")
+
+    settings = AuthSettings()
+
+    assert (settings.client_id, settings.client_secret, settings.tenant_id) == (
+        "canonical-client",
+        "canonical-secret",
+        "canonical-tenant",
+    )
+
+
+# --- oidc_proxy (OIDCProxy — the provider-agnostic OAuth-Proxy front door) ----------------------
+# The proxy is FastMCP's; what we own is the config mapping and the fail-fast, so that is what
+# these assert.
+
+_OIDC = dict(
+    mode="oidc_proxy",
+    issuer="https://idp.test/realms/quants",
+    client_id="app-client-id",
+    client_secret="app-secret",
+    resource_url="http://localhost:8000",
+    audience="kx-mcp-aud",
+)
+
+
+@pytest.fixture
+def fake_oidc_proxy(monkeypatch):
+    """Capture the builder's kwargs. The real class fetches discovery in its constructor, so it
+    can't be built without a live issuer."""
+    import fastmcp.server.auth.oidc_proxy as oidc_mod
+
+    captured = {}
+
+    class FakeOIDCProxy:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(oidc_mod, "OIDCProxy", FakeOIDCProxy)
+    return captured
+
+
+def test_oidc_proxy_builds_proxy_with_app_config(fake_oidc_proxy):
+    """Happy path: the pre-registered app config + claim knobs reach OIDCProxy unchanged."""
+    provider = build_auth_provider(AuthSettings(**_OIDC, required_scopes=["openid"]))
+
+    assert provider is not None
+    assert fake_oidc_proxy == {
+        "config_url": "https://idp.test/realms/quants/.well-known/openid-configuration",
+        "strict": True,
+        "client_id": "app-client-id",
+        "client_secret": "app-secret",
+        "audience": "kx-mcp-aud",
+        "algorithm": "RS256",
+        "required_scopes": ["openid"],
+        "base_url": "http://localhost:8000",
+        "jwt_signing_key": None,
+    }
+
+
+def test_oidc_proxy_derives_config_url_from_issuer(fake_oidc_proxy):
+    """Discovery precedence, step 1: the standard well-known path is derived from the issuer."""
+    build_auth_provider(AuthSettings(**{**_OIDC, "issuer": "https://idp.test/realms/quants/"}))
+    # The trailing slash on the issuer must not produce a double slash in the derived URL.
+    assert (
+        fake_oidc_proxy["config_url"]
+        == "https://idp.test/realms/quants/.well-known/openid-configuration"
+    )
+
+
+def test_oidc_proxy_explicit_config_url_wins_over_issuer(fake_oidc_proxy):
+    """Discovery precedence, step 2: an explicit config URL wins — for issuers not serving
+    metadata at the standard path (Entra v2.0, some Auth0/Okta setups)."""
+    build_auth_provider(
+        AuthSettings(**_OIDC, config_url="https://idp.test/other/.well-known/openid-configuration")
+    )
+    assert fake_oidc_proxy["config_url"] == "https://idp.test/other/.well-known/openid-configuration"
+
+
+def test_oidc_proxy_config_url_alone_is_enough(fake_oidc_proxy):
+    """The issuer is only a means of deriving the discovery URL — naming it directly suffices."""
+    cfg = {k: v for k, v in _OIDC.items() if k != "issuer"}
+    build_auth_provider(AuthSettings(**cfg, config_url="https://idp.test/.well-known/openid-configuration"))
+    assert fake_oidc_proxy["config_url"] == "https://idp.test/.well-known/openid-configuration"
+
+
+@pytest.mark.parametrize("drop", ["issuer", "client_id", "resource_url"])
+def test_oidc_proxy_missing_config_raises(drop):
+    """Each missing required field is a clear operator error, not a stack trace at request time."""
+    cfg = {k: v for k, v in _OIDC.items() if k != drop}
+    with pytest.raises(ValueError, match="KX_MCP_AUTH=oidc_proxy requires"):
+        build_auth_provider(AuthSettings(**cfg))
+
+
+def test_oidc_proxy_public_client_requires_a_signing_key():
+    """A public/PKCE client may omit the secret, but must then supply the signing key — FastMCP
+    otherwise has nothing to derive the token and store keys from."""
+    cfg = {k: v for k, v in _OIDC.items() if k != "client_secret"}
+    with pytest.raises(ValueError, match="KX_MCP_AUTH_JWT_SIGNING_KEY"):
+        build_auth_provider(AuthSettings(**cfg))
+
+
+def test_oidc_proxy_public_client_with_signing_key_builds(fake_oidc_proxy):
+    cfg = {k: v for k, v in _OIDC.items() if k != "client_secret"}
+    build_auth_provider(AuthSettings(**cfg, jwt_signing_key="a-stable-signing-key"))
+    assert fake_oidc_proxy["client_secret"] is None
+    assert fake_oidc_proxy["jwt_signing_key"] == "a-stable-signing-key"
+
+
+def test_oidc_proxy_without_audience_warns_but_builds(fake_oidc_proxy, caplog):
+    """An unvalidated 'aud' accepts any token the issuer minted, but the flow works without it —
+    so warn rather than refuse to start."""
+    cfg = {k: v for k, v in _OIDC.items() if k != "audience"}
+    with caplog.at_level(logging.WARNING, logger="kx_mcp_core.auth.providers"):
+        build_auth_provider(AuthSettings(**cfg))
+    assert "aud" in caplog.text
+    assert fake_oidc_proxy["audience"] is None
+
+
+def test_oidc_proxy_strict_discovery_is_opt_out(fake_oidc_proxy):
+    """Lenient discovery documents (a missing subject_types_supported, say) need an escape hatch."""
+    build_auth_provider(AuthSettings(**_OIDC, oidc_strict=False))
+    assert fake_oidc_proxy["strict"] is False
 
 
 # --- the pluggable seam ------------------------------------------------------------------------

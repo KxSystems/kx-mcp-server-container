@@ -30,7 +30,7 @@ from kx_mcp_core.auth import (
     AuthzSettings,
     authorize,
     configure_authz,
-    current_authz_decision,
+    begin_authz_dispatch,
     register_authz_adapter,
 )
 
@@ -81,9 +81,16 @@ def _reset_authz():
     """Isolate the module-global authz settings + decision contextvar between tests (mirrors
     tests/deterministic/unit/test_authorize.py's ``_reset_authz`` fixture)."""
     authorize_mod._SETTINGS = None
-    current_authz_decision.set(None)
+    begin_authz_dispatch()
     yield
     authorize_mod._SETTINGS = None
+
+
+def _patch_current_principal(monkeypatch, principal) -> None:
+    """Make current_principal() return `principal`, as seen by both the audit middleware and the
+    @authorize decorator — the two call sites a fake principal fixture needs to patch in lockstep."""
+    monkeypatch.setattr("kx_mcp_core.auth.audit.current_principal", lambda: principal)
+    monkeypatch.setattr(authorize_mod, "current_principal", lambda: principal)
 
 
 @pytest.fixture
@@ -94,10 +101,7 @@ def alice(monkeypatch):
         client_id = "alice"
         claims: dict = {}
 
-    monkeypatch.setattr(
-        "kx_mcp_core.auth.audit.current_principal", lambda: _FakePrincipal()
-    )
-    monkeypatch.setattr(authorize_mod, "current_principal", lambda: _FakePrincipal())
+    _patch_current_principal(monkeypatch, _FakePrincipal())
 
 
 def _dispatch(parent: FastMCP, tool_name: str) -> None:
@@ -218,3 +222,49 @@ def test_dispatch_audit_shape_carries_deny_decision_and_adapter(alice, caplog):
     assert fields["outcome"] == "denied"
     assert fields["decision"] == "deny"
     assert fields["adapter"] == "fake_deny_shape_test"
+
+
+@pytest.fixture
+def app_acting_for_alice(monkeypatch):
+    """A principal whose token client_id (the OAuth *client*) differs from claims['sub'] (the
+    *human*) — the shape any confidential-client / on-behalf-of flow produces. The `alice` fixture
+    above sets client_id only, so it can't tell the two derivations apart."""
+
+    class _FakePrincipal:
+        client_id = "app-123"
+        claims = {"sub": "alice"}
+
+    _patch_current_principal(monkeypatch, _FakePrincipal())
+
+
+def test_dispatch_audit_subject_matches_authz_decision_subject(app_acting_for_alice, caplog):
+    """The audited `subject=` must be the SAME subject the capability check decided on.
+
+    `authorize._check` derives `claims['sub'] or token.client_id or 'anonymous'`; `AuditMiddleware.
+    _audit` derives only `token.client_id or 'anonymous'`. One token, two subjects: the line says
+    the app, the decision was about the human — the audit record cannot answer "who was granted
+    this?", which is the one question it exists to answer.
+    """
+    decided_subjects: list[str] = []
+
+    def _record(request):
+        decided_subjects.append(request.subject)
+        return True
+
+    register_authz_adapter("subject_probe_shape_test", _record)
+    configure_authz(AuthzSettings(mode="subject_probe_shape_test"))
+
+    parent = make_parent("kx-mcp")
+    mount_bundle(
+        parent,
+        lambda: _gated_backend("kdbx", action="read", resource="kdbx.sql"),
+        namespace="kdbx",
+    )
+
+    with caplog.at_level(logging.INFO, logger="kx_mcp.audit"):
+        _dispatch(parent, "kdbx_gated")
+
+    lines = [_parse_audit(m) for m in _audit_lines(caplog) if m.startswith("audit ")]
+    assert len(lines) == 1, lines
+    assert decided_subjects == ["alice"]
+    assert lines[0]["subject"] == "alice"

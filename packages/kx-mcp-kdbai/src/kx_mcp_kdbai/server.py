@@ -32,7 +32,13 @@ class McpServer:
         """Check if KDB.AI service is reachable and accessible."""
         try:
             from kdbai_client import KDBAIException
-            from kx_mcp_kdbai.utils.kdbai import _open_session
+            from kx_mcp_kdbai.utils.kdbai import _open_session, require_validated_passthrough
+
+            # `passthrough` forwards the VALIDATED inbound principal's bearer, so it is meaningless
+            # without inbound auth: there would never be a principal, and every call would quietly
+            # open an anonymous session. Refuse the combination here, where a misconfiguration is an
+            # operator error at startup, rather than let it look like a working deployment.
+            require_validated_passthrough(self.db_config)
 
             protocol = self.db_config.rest_protocol if self.db_config.mode == "rest" else "http"
             endpoint = f"{protocol}://{self.db_config.host}:{self.db_config.port}"

@@ -36,6 +36,13 @@ class _StubConnection:
     def __init__(self, config: AcmeConfig) -> None:
         self.endpoint = f"{config.host}:{config.port}"
 
+    def kinds(self) -> list[str]:
+        """The valid widget kinds — so a failed lookup can name them in its recovery hint."""
+        return sorted(_CATALOG)
+
+    def known(self, kind: str) -> bool:
+        return kind in _CATALOG
+
     def query(self, kind: str) -> dict:
         return {"endpoint": self.endpoint, "kind": kind, "rows": _CATALOG.get(kind, [])}
 
