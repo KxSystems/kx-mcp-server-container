@@ -68,7 +68,9 @@ async def get_table_metadata(
     """Get one table's contract-v1 schema and live state before composing a query.
 
     Semantic types and foreign references explain joins and vocabulary resolution. `rowSource`
-    distinguishes real preview rows from illustrative annotation samples. Read
+    distinguishes real preview rows from illustrative annotation samples; a failed preview reports
+    `rowSource: "error"` and `live.previewError`, and infinities shown as null carry
+    `live.nonFiniteAsNull`. Read
     `schema://kdbx/metadata/v1` for the complete response contract.
     """
     # tool_result marks a failed dispatch `isError: true` while keeping the payload — including a

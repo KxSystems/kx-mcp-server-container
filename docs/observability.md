@@ -223,9 +223,13 @@ Unlike metrics, tracing needs no HTTP route, so it works under **every** transpo
 
 **The OpenTelemetry SDK is imported lazily** — only when `KX_MCP_TRACING=otlp` actually turns the seam
 on. A deployment with tracing off never pays for the SDK, exporter, or gRPC import (the same deferral
-`KX_MCP_AUTHZ=static` uses for its YAML policy adapter). If exporter setup fails — an unreachable
-endpoint, a missing optional dependency — the container logs a warning and serves **without** traces
-rather than refusing to start; telemetry is never worth an outage.
+`KX_MCP_AUTHZ=static` uses for its YAML policy adapter). If exporter setup fails — a bad
+configuration, a missing optional dependency — the container logs a warning and serves **without**
+traces rather than refusing to start. Building the exporter never contacts the collector, so an
+unreachable endpoint is not a setup failure: at startup a best-effort probe (a short TCP connect on a
+background thread, so it never delays startup) logs `OTLP endpoint … is unreachable … serving without
+traces until it becomes reachable`, and the exporter's own warnings appear as spans are dropped.
+Tracing never blocks serving; telemetry is never worth an outage.
 
 ---
 
@@ -354,15 +358,15 @@ to want. Ask that question of traces.
 | --- | --- | --- | --- |
 | `kdbx_qipc_calls_total` | counter | `op`, `outcome` | One increment per qIPC round-trip. |
 | `kdbx_qipc_duration_seconds` | histogram | `op` | Duration of a qIPC round-trip. |
-| `kdbx_connects_total` | counter | `outcome` | Connection establishment attempts (`ok` / `failed`). |
-| `kdbx_reconnects_total` | counter | — | A cached handle was found closed and re-established. |
+| `kdbx_connects_total` | counter | `outcome` | Connection establishment attempts (`ok` / `failed`), including the startup pre-flight and reopening a handle found dead. |
+| `kdbx_reconnects_total` | counter | — | A cached handle was found dead and re-established; a reopen that fails is counted as `kdbx_connects_total{outcome="failed"}` instead. |
 | `kdbx_sql_result_rows` | histogram | — | Rows *matched* by a SQL query, before the response cap. |
 | `kdbx_sql_truncated_total` | counter | — | Responses capped at `MAX_ROWS_RETURNED` (1000). |
 | `kdbx_authz_consults_total` | counter | `adapter`, `action`, `decision` | q-side authorization consults. |
 | `kdbx_embed_duration_seconds` | histogram | `provider`, `kind` | An embedding-provider call. |
 
 `op` is the round-trip's role, not its q expression: `connect`, `probe`, `bind`, `authorize`,
-`entitled`, `sql`, `tables`, `meta`, `rowcounts`, `partitioned`, `preview`, `search`,
+`entitled`, `preflight` (the startup checks), `sql`, `tables`, `meta`, `rowcounts`, `partitioned`, `preview`, `search`,
 `hybrid_search`, `aimeta.probe`, `aimeta.fetch`, `aimeta.reload`. Spans are named `kdbx.<op>`.
 
 `decision` is `allow`, `deny`, or **`partial`** — the last being a scope-down, where the data gate
@@ -371,11 +375,18 @@ it means agents are routinely asking for more than they are entitled to see.
 
 Two of these answer questions nothing else in the stack does. `kdbx_sql_truncated_total` says agents
 are hitting the 1000-row cap, which is a product signal rather than an operational one. And reading
-`tables://kdbx/all` issues **two round-trips per visible table** — its `meta` and a row preview —
-plus three fixed ones (`tables`, `rowcounts`, `partitioned`). A three-table document is therefore
-ten round-trips including the connection probe, which the dispatch histogram reports as one
-aggregate number; `kdbx_qipc_calls_total{op="preview"}` climbing much faster than the dispatch count
-is that fan-out.
+`tables://kdbx/all` issues **one `preview` round-trip per visible non-empty table** (for the first 20
+tables), plus one batched `meta` for all the tables aimeta does not annotate, three fixed ones
+(`tables`, `rowcounts`, `partitioned`) and the connection `probe`. A three-table, un-annotated
+document is therefore **eight** round-trips: 3 + 1 + 3 + 1. It costs more when:
+
+- a table's columns are missing from the batched `meta`, which adds one `meta` for that table;
+- a preview hits float infinities, which adds a second `preview` for that table;
+- the aimeta cache is cold, which adds `aimeta.probe`, plus `aimeta.fetch` where aimeta is loaded;
+- identity assertion or the data gate is on, which adds their `bind` / `entitled` calls.
+
+The dispatch histogram reports all of this as one aggregate number;
+`kdbx_qipc_calls_total{op="preview"}` climbing much faster than the dispatch count is that fan-out.
 
 ### KDB.AI
 
@@ -455,7 +466,7 @@ in-process, by `tests/deterministic/integration/test_observability_metrics_e2e.p
 | Startup warns "serves no HTTP endpoint" | Metrics requested under `stdio`. Switch to `--transport streamable-http`, or drop `KX_MCP_METRICS` for the stdio posture. |
 | Container refuses to start on a mode error | An unrecognised `KX_MCP_METRICS` / `KX_MCP_TRACING` value — the message lists the accepted modes. This is deliberate: a typo must not silently disable telemetry. |
 | `/metrics` is served but a tool never appears | Counters are created on first use, so a tool that has never been dispatched has no series yet. Call it once. |
-| No spans reach the collector | Check `KX_MCP_TRACING_OTLP_ENDPOINT` is reachable *from the container*, and look for the `serving without traces` warning at startup. Spans are batched, so allow a few seconds. |
+| No spans reach the collector | Check `KX_MCP_TRACING_OTLP_ENDPOINT` is reachable *from the container*, and look at startup for the `OTLP endpoint … is unreachable` warning (a best-effort TCP check; it cannot tell that a reachable port is not an OTLP collector) and for the exporter's own warnings. Spans are batched, so allow a few seconds. |
 | Startup warns `the OpenTelemetry tracing extra is not installed` | Tracing was requested but the extra is absent. Install it (`pip install 'kx-mcp-core[tracing]'`) and restart. The container keeps serving without traces meanwhile — and attaches no tracing middleware at all, so there is no per-dispatch cost either. This message is distinct from the generic `setup failed` one, which means the extra *is* present but something else broke (typically the endpoint). |
 | `/metrics` 404s from hand-written glue even with `KX_MCP_METRICS=prometheus` | The glue built the parent itself and skipped one of the two required calls — see *Where the seams attach*. The `kx-mcp` launcher does both. |
 | Metrics/tracing add no `denied` series | The authorization seam may be route-only — see the [auth guide](auth.md#authorization-kx_mcp_authz). Route-only dispatches record `ok`. |

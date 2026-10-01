@@ -567,9 +567,15 @@ gate (what infra the test needs), not a section marker.
 
 > Coverage is split across a fastmcp-free projection layer (`kx-auth-core`) that projects the
 > validated principal into a q-friendly dict, and the kdbx-side bind/cache wiring (`kx-mcp-kdbx`)
-> that ferries it over qIPC and binds it via `.kx.auth.bind`; the q-side module tests live in-repo
-> alongside `modules/kx/auth/init.q` per the `q` skill's conventions, not as a
-> `test_kx_auth_module.py` pytest file (no pykx-free way to exercise `.kx.auth.bind` in-process).
+> that ferries it over qIPC and binds it via `.kx.auth.bind`. The module's **own** q-native suite lives
+> with the module, in [KxSystems/kx-auth](https://github.com/KxSystems/kx-auth) — it is not vendored here
+> — rather than as a `test_kx_auth_module.py` pytest file (there is no pykx-free way to exercise
+> `.kx.auth.bind` in-process). What this repo keeps are two `.q` regressions plus their pytest
+> wrappers, `kx_auth_assertion_gate.q` and `kx_auth_rebind.q`: they load the module **flat** (`system"l
+> …/auth/init.q"`, resolved from `$KX_AUTH_MOD` → `$QPATH` → `~/.kx/mod/kx`) rather than with
+> ``use`kx.auth``, because they assert on **private** state — `promote`, `fromJson`, `serveHttp` and the
+> `bound` store are not in the export dict, so `use` cannot reach them. They are deliberately retained
+> as drift detectors against the module the container actually depends on.
 >
 > **Live-q gap closed.** This section previously noted no automated test exercised the q-side
 > `.kx.auth.bind`/`authorize`/default-deny against a real q process — proven only by a manual

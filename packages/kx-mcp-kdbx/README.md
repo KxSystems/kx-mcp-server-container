@@ -92,10 +92,15 @@ q examples/host.q
 ## Semantic metadata with aimeta
 
 [aimeta](https://github.com/KxSystems/aimeta) is optional. When the target host loads it, the
-backend reads its schema-v2 document over the existing qIPC connection and enriches discovery with
+backend reads its document over the existing qIPC connection and enriches discovery with
 descriptions, semantic types, foreign references, reference vocabularies, public function
 signatures, and declared table dependencies. Without aimeta—or when its document is invalid—the
 backend stays available and falls back to native `tables[]`/`meta` introspection.
+
+Supported: **aimeta v0.2.x–v0.3.x (schemaVersion 2–3)**. Each document is validated against the
+schema of its own version. A function's informative `@authorize` grant (schemaVersion 3) appears as
+`authorize` on its function entry. Any other schemaVersion falls back to native introspection with
+`annotationStatus: "unsupported_schema"`.
 
 The agent-facing shape is the backend's own stable **metadata contract v1**, not raw aimeta. Every
 response points to `schema://kdbx/metadata/v1` and reports a richness `tier`, `annotationStatus`, and
@@ -104,7 +109,8 @@ useful semantic annotations. Use `tables://kdbx/{table}` and `functions://kdbx/{
 token-efficient lookups.
 
 First install aimeta and its runtime modules on the host by following its canonical
-[installation guide](https://github.com/KxSystems/aimeta/blob/main/docs/install.md). The module must
+[installation guide](https://github.com/KxSystems/aimeta/blob/v0.3.0/docs/install.md) (pinned to
+v0.3.0, the newest supported release). The module must
 resolve as `kx/aimeta` under `$QPATH` (normally `~/.kx/mod/kx/aimeta`). Then enable it after defining
 the host's tables and functions:
 
@@ -140,7 +146,7 @@ concern — they belong to the container (`KX_MCP_*`), since the backend is moun
 | Password | `KDBX_DB_PASSWORD` | _(empty)_ | Backend connection credential; use this or `KDBX_DB_PASSWORD_FILE`, not both |
 | TLS | `KDBX_DB_TLS` | `false` | See TLS note below |
 | Timeout | `KDBX_DB_TIMEOUT` | `1` | Connect timeout (seconds) |
-| Retry | `KDBX_DB_RETRY` | `2` | Connect retry attempts |
+| Retry | `KDBX_DB_RETRY` | `2` | Retries after a failed connect, so attempts = retry + 1 (`0` = one attempt, `2` = up to three). Also applies when a cached handle is found dead and reopened. Must be `>= 0` |
 | Embeddings CSV | `KDBX_DB_EMBEDDING_CSV_PATH` | _(packaged `utils/embeddings.csv`)_ | Per-table embedding config |
 | Distance metric | `KDBX_DB_METRIC` | `CS` | `CS`, `L2`, `IP` |
 | Default `k` | `KDBX_DB_K` | `5` | Default neighbours returned |
@@ -178,25 +184,52 @@ for the full walkthrough.
 **Enable it:** set `KDBX_DB_ASSERT_IDENTITY=true` (default off). Off behaves exactly as the
 single-principal posture (no bind), so a vanilla kdb+ is unaffected. When on:
 
-1. **Load the `kx.auth` KDB-X module** on your KDB-X process. It's a `use`-loaded module
-   ([`modules/kx/auth/`](https://github.com/KxSystems/kx-mcp-server-container/tree/main/modules/kx/auth)); install it onto the q module path once with
-   `just install-modules` (symlinks it into `~/.kx/mod/kx/auth`), then on the host:
+1. **Install and load the `kx.auth` KDB-X module** on your KDB-X process. **The module is not part of
+   this repository** — it and its peer policy engine `kx.rbac` are maintained in
+   [KxSystems/kx-auth](https://github.com/KxSystems/kx-auth). Put both on the q module path once:
+   ```bash
+   just install-modules                                        # fetches the pinned tag
+   just kx_auth_src=/path/to/kx-auth install-modules           # ...or symlink a local checkout
+   ```
+   Without `just` or a clone of this repo, install them from a kx-auth release:
+   ```bash
+   KX_AUTH_VERSION=v0.5.0
+   tmp="$(mktemp -d)"
+   curl -fsSL "https://github.com/KxSystems/kx-auth/archive/refs/tags/${KX_AUTH_VERSION}.tar.gz" \
+     | tar -xz -C "$tmp"
+   mkdir -p ~/.kx/mod/kx
+   cp -R "$tmp"/*/modules/kx/. ~/.kx/mod/kx/      # installs kx/auth and kx/rbac
+   rm -rf "$tmp"
+   export QPATH="$QPATH:$HOME/.kx/mod"            # add to your shell profile to persist
+   ```
+   Check that both resolve:
+   ```bash
+   echo 'r:(99h=type @[use;`kx.auth;{`err}]) and 99h=type @[use;`kx.rbac;{`err}]; -1 $[r;"ok";"FAILED"]; exit 0' | q -q
+   ```
+   Then, on the host:
    ```q
    .kx.auth:use`kx.auth;                                       / MUST bind to the global `.kx.auth`
+   .kx.rbac:use`kx.rbac;                                       / the peer policy engine
    .kx.auth.configure[(`kxmcp;"service-account-pw")];          / dev/reference verifier; see below
    .kx.auth.setClaims[(enlist `groups)!enlist "realm_access.roles"]; / where to read groups (host owns it)
-   .kx.auth.setPolicy[myGrantFn];                              / required — must grant the svc login `assert on `kx.identity (bind is gated by this default-deny policy)
+   .kx.auth.setLoginGroups[(enlist `kxmcp)!enlist `superUsers]; / the svc LOGIN's own groups
+   .kx.rbac.grant[`superUsers; `assert; `kx.identity];         / who may assert an identity
+   .kx.rbac.grant[`trader;     `read;   `data.trades];         / ...and who may read what
+   .kx.auth.setPolicy .kx.rbac.policy[];                       / install the engine (required)
    .kx.auth.activate[];                                        / wire .z.pw / .z.po / .z.pc (qIPC)
    / .kx.auth.activateHttp[];                                  / OPTIONAL: wire .z.ph / .z.pp (thin HTTP)
    ```
-   It exposes `bind` / `current` / `valid` / `require` (default-deny on an unbound/expired handle),
-   a **data-level authorization seam** (`setPolicy[fn]` installs a `(principal;action;resource) -> 1b`
-   decision function, `authorize[action;resource]` enforces it, default-deny until set), and `setClaims`
-   to point promotion at the right claim path (default search `groups`→`realm_access.roles`→`roles`).
-   `bind` itself consults that same policy — the connecting login needs an `` `assert `` grant on
-   `` `kx.identity `` or every assertion is refused (see the
-   [module README](https://github.com/KxSystems/kx-mcp-server-container/blob/main/modules/kx/auth/README.md)).
-   The eager pre-flight verifies `.kx.auth.bind` is defined and disables this bundle if not.
+   `kx.auth` exposes `bind` / `current` / `valid` / `require`, a **default-deny data-level authorization
+   seam** (`setPolicy[fn]` installs the decision function, either `(principal;action;resource) -> 1b`
+   or the context-aware `(principal;action;resources;ctx)` form; `authorize[action;resource]` enforces
+   it), and `setClaims` to point promotion at the right claim path (default search
+   `groups`→`realm_access.roles`→`roles`). `kx.rbac` is the standard decision function, so you don't
+   hand-roll one — one table of `(group;action;resource)` grants,
+   with **no verb subsumption** (grant each verb explicitly).
+   `bind` itself consults the same policy — the connecting login needs an `` `assert `` grant on
+   `` `kx.identity `` or every assertion is refused. A kdb+ login carries no IdP groups, which is what
+   `setLoginGroups` supplies. The eager pre-flight verifies `.kx.auth.bind` is defined and disables this
+   bundle if not.
 2. **Configure one credential source on each side.** On the MCP side, set
    `KDBX_DB_USERNAME` plus either `KDBX_DB_PASSWORD` or `KDBX_DB_PASSWORD_FILE` (the file wins; a
    mounted secret is preferred in production). On q, either use `.kx.auth.configure` as shown for a

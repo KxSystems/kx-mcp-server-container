@@ -139,3 +139,54 @@ def test_denied_bearer_emits_authenticate_audit_over_the_wire(tmp_path, keypair,
     assert fields["error"] == "invalid_token"
     assert fields["reason"] == "expired"
     assert fields["claimed_sub"] == "svc-1"
+
+
+def test_audit_outcome_matches_the_metric_label_for_every_outcome(tmp_path, spawn_container):
+    """REGRESSION: one dispatch, one classification, in the audit line and in the scraped counter.
+
+    The audit line read only the authz decision, so a tool that RETURNED `isError: true` was audited
+    `outcome=ok` while `kx_mcp_dispatches_total` counted it `error`: every returned failure (a SQL
+    error, a lost backend) read as a success in the audit log. Each outcome path is covered, since
+    the two used to share a classifier by convention only. Uses the license-free `outcomes` fixture.
+    """
+    import httpx
+    from prometheus_client.parser import text_string_to_metric_families
+
+    policy = tmp_path / "capability-policy.yaml"
+    policy.write_text("outcomes:\n  write: [admins]\n")  # anonymous has no groups -> denied
+    url, proc = spawn_container(
+        "outcomes",
+        KX_MCP_METRICS="prometheus",
+        KX_MCP_AUTHZ="static",
+        KX_MCP_AUTHZ_POLICY_FILE=str(policy),
+    )
+    expected = {"ok": "ok", "failed": "error", "raises": "error", "denied": "denied"}
+
+    async def call_each() -> None:
+        async with Client(StreamableHttpTransport(url)) as client:
+            for tool in expected:
+                await client.call_tool(f"outcomes_{tool}", {}, raise_on_error=False)
+
+    asyncio.run(call_each())
+    scraped = httpx.get(url.rsplit("/mcp", 1)[0] + "/metrics", timeout=10).text
+    proc.terminate()
+    try:
+        out, _ = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate()
+
+    metric = {
+        sample.labels["tool_name"].removeprefix("outcomes_"): sample.labels["outcome"]
+        for family in text_string_to_metric_families(scraped)
+        for sample in family.samples
+        if sample.name == "kx_mcp_dispatches_total" and sample.value == 1
+    }
+    audit = {}
+    for line in out.splitlines():
+        if "audit subject=" in line and "action=tool_invoke" in line:
+            fields = dict(tok.partition("=")[::2] for tok in line.split() if "=" in tok)
+            audit[fields["target"].removeprefix("outcomes_")] = fields["outcome"]
+
+    assert metric == expected
+    assert audit == expected

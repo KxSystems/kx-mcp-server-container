@@ -3,8 +3,9 @@ import threading
 from collections import OrderedDict
 from typing import Any, NamedTuple, Optional
 import pykx as kx
+from pykx.exceptions import QError
 from kx_auth_core import project_principal
-from kx_mcp_core import span
+from kx_mcp_core import remaining_mount_budget, span
 from kx_mcp_kdbx.settings import KDBConfig
 from kx_mcp_kdbx.utils.observe import q, record_connect, record_reconnect
 
@@ -176,18 +177,31 @@ def get_kdb_connection(config: Optional[KDBConfig] = None) -> kx.QConnection:
         _assert_assertable(principal)
     pkey = _principal_key(principal)
     try:
+        # A failure here is a failed first connect, already counted `failed` by `_connect`.
         conn = kdb_sync_connection(cfg, pkey)
+    except Exception as e:
+        logger.error(f"Error in creating KDBX connection: {e}")
+        raise
+    try:
         q(conn, "probe", '') # check if conn is live for existing connection from cache
     except Exception as e:
-        if "Attempted to use a closed IPC connection" in str(e):
-            logger.warning("KDB-X connection was closed. Reinitializing...")
-            record_reconnect()
-            cleanup_kdb_connection()
-            conn = kdb_sync_connection(cfg, pkey)
-            q(conn, "probe", '')
-        else:
+        if not _is_dead_handle(e, conn):
+            # A q-side refusal of the probe (`.z.pg` saying no, say): the handle is fine, and
+            # reconnecting would only get the same answer on a fresh one.
             logger.error(f"Error in creating KDBX connection: {e}")
             raise
+        logger.warning(f"KDB-X connection was closed. Reinitializing... ({e})")
+        _evict_connection(cfg, pkey, conn)
+        try:
+            # Through `_connect`, so a refused reopen is counted `failed` and honours the retries.
+            conn = kdb_sync_connection(cfg, pkey)
+            q(conn, "probe", '')
+        except Exception as reopen_error:
+            logger.error(f"Error in re-creating KDBX connection: {reopen_error}")
+            raise
+        # Counted once the handle is back, which is what the metric documents: found closed AND
+        # re-established. A reopen that fails shows up as `kdbx_connects_total{outcome="failed"}`.
+        record_reconnect()
     if assert_identity:
         _bind_principal(conn, principal)
     return conn
@@ -257,6 +271,13 @@ class _ConnectionCache:
                 self._close(evicted, "evicted")
         return conn
 
+    def evict(self, key, conn) -> None:
+        """Drop and close `conn` under `key`, unless another caller already replaced it."""
+        with self._lock:
+            if self._entries.get(key) is conn:
+                del self._entries[key]
+        self._close(conn, "dead")
+
     def cache_info(self) -> _CacheInfo:
         with self._lock:
             return _CacheInfo(self._hits, self._misses, self.maxsize, len(self._entries))
@@ -287,13 +308,78 @@ kdb_sync_connection.cache_info = _connection_cache.cache_info  # type: ignore[at
 kdb_sync_connection.cache_clear = _connection_cache.cache_clear  # type: ignore[attr-defined]
 
 
-def _connect(config: KDBConfig) -> kx.QConnection:
-    """Open one qIPC handle, retrying `config.retry` times before giving up."""
+def _evict_connection(config: KDBConfig, principal_key: Optional[tuple], conn: Any) -> None:
+    """Drop one dead cached handle. Other keys' handles are left to find out on their own probe."""
+    _connection_cache.evict((config, principal_key), conn)
+
+
+# How PyKX reports a handle whose peer has gone, with its own reconnect disabled
+# (`reconnection_attempts=-1`, `pykx/ipc.py`): the peer closed it (`closed IPC connection`, also
+# raised for a handle PyKX already closed), it died mid-message (`connection closed`), or the write
+# failed (`Failed to send query on IPC socket`). The TLS path goes through q's own handle and reports
+# the same as a QError naming the handle; those three texts are the ones PyKX's own reconnect
+# treats as dead. Every other QError is q answering, so the handle is alive.
+_DEAD_HANDLE_TEXT = ("closed IPC connection", "connection closed", "Failed to send query on IPC socket")
+_DEAD_HANDLE_QERROR_TEXT = ("snd handle", "write to handle", "close handle")
+
+
+def _is_dead_handle(exc: BaseException, conn: Any) -> bool:
+    """True when `exc` from a round-trip on `conn` means the handle is dead, not that q said no."""
+    text = str(exc)
+    if isinstance(exc, QError):
+        return any(t in text for t in _DEAD_HANDLE_QERROR_TEXT)
+    if isinstance(exc, OSError):  # ECONNRESET / EPIPE / EBADF straight off the socket
+        return True
+    if getattr(conn, "closed", False) is True:
+        return True
+    return any(t in text for t in _DEAD_HANDLE_TEXT)
+
+
+# Below this, a mount budget is treated as spent. PyKX hands the connect timeout to `hopen` as
+# `int(seconds * 1000)` milliseconds, and a 0 there means *no* timeout, the opposite of what a nearly
+# exhausted budget wants. 50ms also keeps a last attempt from being a guaranteed timeout.
+_MIN_CONNECT_TIMEOUT = 0.05
+
+
+class MountBudgetExhausted(ConnectionError):
+    """The connect ran out of the launcher's `KX_MCP_MOUNT_TIMEOUT` budget before it succeeded."""
+
+
+def _connect_timeout(config: KDBConfig, attempts_made: int = 0, cause: Optional[BaseException] = None) -> Optional[float]:
+    """The `connection_timeout` for the next connect attempt; `None` keeps PyKX's default.
+
+    Outside a bounded mount this is `None`, so PyKX times the connect with `config.timeout` exactly
+    as before. Inside one it is capped by what is left of the budget, because an embedded-q `hopen`
+    holds the GIL and the launcher's `join(timeout)` cannot fire until it returns: the bundle has to
+    bound its own wait. Only the connect is capped; `timeout` still governs queries on the handle,
+    which outlives the mount. Raises `MountBudgetExhausted` once the budget is spent.
+    """
+    budget = remaining_mount_budget()
+    if budget is None:
+        return None
+    if budget < _MIN_CONNECT_TIMEOUT:
+        detail = f"; last error: {cause}" if cause is not None else ""
+        raise MountBudgetExhausted(
+            f"KDB-X connect to {config.host}:{config.port} abandoned: the mount budget "
+            f"(KX_MCP_MOUNT_TIMEOUT) ran out after {attempts_made} attempt(s){detail}"
+        )
+    # `timeout` 0 is PyKX's "no timeout", so the budget alone bounds it.
+    return budget if config.timeout <= 0 else min(float(config.timeout), budget)
+
+
+def _connect(config: KDBConfig, retries: Optional[int] = None) -> kx.QConnection:
+    """Open one qIPC handle: one attempt plus `retries` (default `config.retry`), within any mount budget."""
     logger.debug(f"KDBConfig: {config=}")
     logger.info(f"Connecting to KDB at {config.host}:{config.port}")
-    retry = config.retry
+    attempts = (config.retry if retries is None else retries) + 1
     last_error: Optional[Exception] = None
-    for attempt in range(1, retry + 1):
+    for attempt in range(1, attempts + 1):
+        try:
+            con_timeout = _connect_timeout(config, attempt - 1, last_error)
+        except MountBudgetExhausted as e:
+            logger.error(str(e))
+            record_connect("failed")
+            raise e from last_error
         try:
             with span("kdbx.connect", {"server.address": config.host, "server.port": config.port}):
                 conn = kx.SyncQConnection(
@@ -302,7 +388,12 @@ def _connect(config: KDBConfig) -> kx.QConnection:
                     username=config.username,
                     password=config.password.get_secret_value(),
                     timeout=config.timeout,
-                    reconnection_attempts=config.retry,
+                    connection_timeout=con_timeout,
+                    # PyKX's own reconnect (N tries, 0 = forever) is off: it silently reopened
+                    # and resent under `get_kdb_connection`, which then never saw a dead handle to
+                    # count, and a refused reopen surfaced as an uncounted connect error. The
+                    # probe there owns reconnection, through this function.
+                    reconnection_attempts=-1,
                     tls=config.tls,
                 )
             logger.info("Connected to Q/KDB-X")
@@ -310,19 +401,15 @@ def _connect(config: KDBConfig) -> kx.QConnection:
             return conn
         except Exception as e:
             last_error = e
-            logger.warning(f"KDB-X connectivity attempt {attempt}/{retry} failed: {str(e)}")
+            logger.warning(f"KDB-X connectivity attempt {attempt}/{attempts} failed: {str(e)}")
 
     logger.error("Failed to connect to KDB")
     record_connect("failed")
-    # A bare `raise` used to sit here, OUTSIDE any except block, so it reported
-    # `RuntimeError: No active exception to re-raise` and threw away the actual connection error —
-    # the one piece of information an operator needs, and it also hid the QError the pre-flight in
-    # server.py catches *by type*. Re-raise the real cause. (Fixed independently on both the
-    # adversarial-review and observability branches; reconciled to one fix here.)
-    if last_error is not None:
-        raise last_error
-    # Only reachable when the loop never ran at all (retry < 1), hence "never attempted".
-    raise ConnectionError(f"KDB-X connection to {config.host}:{config.port} was never attempted (retry={retry})")
+    # Re-raise the real cause, not a bare `raise` outside an except block (which reported
+    # `RuntimeError: No active exception to re-raise`): the pre-flight in server.py catches the
+    # QError by type. `attempts >= 1` (`retry` is validated `ge=0`), so the loop always ran.
+    assert last_error is not None
+    raise last_error
 
 def cleanup_kdb_connection():
     """Drop every cached handle, closing each one."""

@@ -251,9 +251,14 @@ the environment value or, preferably in production, a mounted password file.
 
 The container connects as a trusted service account (per-principal cached connections), and calls
 `.kx.auth.bind` with the projected principal (structured fields + raw claims). The q side is the
-[`kx.auth`](../modules/kx/auth/init.q) module (install with `just install-modules`): the host
-process loads it, configures which claim paths promote to `groups`/`tenant`
-(`.kx.auth.setClaims`), and supplies a policy to the default-deny `authorize`/`setPolicy` hook.
+**`kx.auth` module, maintained in [KxSystems/kx-auth](https://github.com/KxSystems/kx-auth) rather than
+in this repository** — install it and its peer policy engine `kx.rbac` onto the q module path with
+`just install-modules` (or `just kx_auth_src=/path/to/kx-auth install-modules` from a local checkout,
+or without `just` from a release tarball, as the kdb-x backend README shows).
+The host process loads both, configures which claim paths promote to `groups`/`tenant`
+(`.kx.auth.setClaims`), and supplies a policy to the default-deny `authorize`/`setPolicy` hook —
+normally `.kx.auth.setPolicy .kx.rbac.policy[]`, so the deployment declares grants instead of writing
+a decision function.
 On q, `.kx.auth.configure[(user;password)]` is the self-contained development/reference verifier;
 an existing `-U` password file or platform-defined `.z.pw` is the production-oriented alternative.
 Do not configure a redundant second q verifier. Whichever verifier authenticates the connection,
@@ -287,6 +292,12 @@ Authorization has two layers, distinguished by *where* the check runs and *what*
 | `""` *(default)* | Route-only. Decorated tools allow; backends' data gates are the sole authority. |
 | `static` | The built-in YAML capability-grant adapter (groups ∩ grant, keyed namespace → action). |
 | `kdbx_rbac` | kdb-x adapter: delegates the `(action; resource)` decision to the q `.kx.auth` engine. |
+
+A backend's adapter registers when the launcher imports its bundle, so select the bundle too
+(`KX_MCP_AUTHZ=kdbx_rbac` with `--bundles kdbx`). The container checks the mode once the bundles
+are loaded, and refuses to start if no adapter has registered for it: a typo, or a provider bundle
+that failed to import, fails at startup rather than per request. A `static` policy file is checked
+before any bundle loads.
 
 The Python `@authorize(...)` decorator depends only on the fastmcp-free authorization adapter seam,
 not on `kx.auth`. `static` reads its YAML policy in the container and works with no q authorization
@@ -365,7 +376,11 @@ Two kinds:
 
 - **Dispatch** — `subject / action / target / outcome`, with
   `action ∈ {tool_invoke, resource_read, prompt_get}`, plus `decision=allow|deny adapter=<name>` when
-  PEP-1 runs (`outcome=denied` when the capability check refused).
+  PEP-1 runs. `outcome` is one of three values, classified exactly as the `outcome` metric label
+  and span attribute are, so the audit line and the metric never disagree about a dispatch:
+  `denied` when an authorization check refused (PEP-1 or a backend's data gate), `error` for any
+  other failure (a raised exception, which adds `error=<ExceptionType>`, or a result the tool
+  marked `isError: true`), and `ok` otherwise.
 - **Authentication** — a bearer the verifier rejected:
   `subject=anonymous action=authenticate target=<KX_MCP_AUTH mode> outcome=denied error=invalid_token reason=<why> claimed_iss=… claimed_sub=… claimed_azp=…`.
   `reason` is a best-effort diagnosis from the *unverified* token: `expired`, `issuer`, `audience`,

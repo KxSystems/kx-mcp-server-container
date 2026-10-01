@@ -20,6 +20,7 @@ from typing import Any
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from kx_auth_core import AuthSettings, decode_claims_unverified
 
+from ..observability._outcome import OUTCOME_DENIED, outcome_for_exception, outcome_for_result
 from .authorize import authz_decision, begin_authz_dispatch, end_authz_dispatch
 from .principal import current_principal, subject_from
 
@@ -33,8 +34,11 @@ class AuditMiddleware(Middleware):
     the decorator (which runs inside the tool) records the :class:`~kx_auth_core.AuthzDecision` on
     the :func:`~kx_mcp_core.auth.authz_decision` (the ``AuthzSlot``), and this middleware
     reads it after the dispatch — so one line answers who / what / decision / which-adapter.
-    ``outcome`` is ``denied`` whenever a recorded decision is not allowed (whether the tool returned
-    a denial or the decorator raised); ``ok`` for an allowed or undecorated (route-only) dispatch.
+    ``outcome`` is classified by the same functions the metrics and tracing middleware use
+    (``observability/_outcome.py``), so the audit line and the ``outcome`` label never disagree:
+    ``denied`` whenever a recorded decision is not allowed (whether the tool returned a denial or
+    the decorator raised); ``error`` for any other raise or a result marked ``isError: true``; ``ok``
+    otherwise.
     """
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
@@ -57,15 +61,15 @@ class AuditMiddleware(Middleware):
             try:
                 result = await call_next(context)
             except Exception as exc:
-                decision = authz_decision()
-                if decision is not None and not decision.allowed:
-                    self._log(subject, action, target, "denied", decision)
-                    raise
-                self._log(subject, action, target, "error", decision, error=exc)
+                outcome = outcome_for_exception()
+                # A denial names no error: the refusal is the whole story, and the decision says so.
+                error = exc if outcome != OUTCOME_DENIED else None
+                self._log(subject, action, target, outcome, authz_decision(), error=error)
                 raise
-            decision = authz_decision()
-            outcome = "denied" if (decision is not None and not decision.allowed) else "ok"
-            self._log(subject, action, target, outcome, decision)
+            # Not just the decision: a tool that RETURNS `isError: true` failed too. This used to
+            # read only the decision, so every returned failure was audited `ok` while the metric
+            # for the same dispatch said `error`.
+            self._log(subject, action, target, outcome_for_result(result), authz_decision())
             return result
         finally:
             end_authz_dispatch(reset)

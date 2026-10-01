@@ -45,7 +45,10 @@ class KDBConfig(BaseSettings):
     )
     retry: int = Field(
         default=2,
-        description="Number of connection retry attempts on failure [env: KDBX_DB_RETRY]"
+        ge=0,
+        description="""Retries after a failed connection attempt, so attempts = retry + 1: 0 makes
+        one attempt, the default 2 makes up to 3. Also bounds re-opening a cached handle found
+        dead (kx-mcp owns reconnection; PyKX's own reconnect is off) [env: KDBX_DB_RETRY]"""
     )
     embedding_csv_path: str = Field(
         default=_DEFAULT_EMBEDDING_CSV,

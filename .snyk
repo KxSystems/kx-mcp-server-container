@@ -1,0 +1,18 @@
+# Snyk (https://snyk.io) policy file, read by `snyk test` run from this directory.
+#
+# Every ignore here must carry an expiry, so an ignored advisory comes back to the scan on its
+# own rather than being forgotten. Renew one only after re-checking upstream for a fix.
+version: v1.25.0
+ignore:
+  SNYK-PYTHON-AUTHLIB-20257410:
+    - '*':
+        reason: >-
+          Critical "Improper Verification of Cryptographic Signature" in authlib 1.7.2, which has
+          no fixed release yet. authlib is pulled in transitively by fastmcp and kdbai-client;
+          this workspace never imports it directly, but fastmcp's OAuthProxy uses its OAuth2
+          client for the upstream token exchange behind the oidc_proxy and entra auth modes.
+          Ignored for 30 days pending an upstream fix; when it expires, upgrade authlib if a fix
+          exists, or re-assess the exposure before renewing.
+        expires: 2026-10-30T00:00:00.000Z
+        created: 2026-09-30T00:00:00.000Z
+patch: {}

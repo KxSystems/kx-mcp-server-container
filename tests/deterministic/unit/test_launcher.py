@@ -2,13 +2,16 @@
 
 import asyncio
 import importlib
+import logging
+import re
+import sys
 import threading
 import time
 
 import pytest
 from fastmcp import FastMCP
 
-from kx_mcp_core import launcher
+from kx_mcp_core import launcher, remaining_mount_budget
 from kx_mcp_core.auth import begin_authz_dispatch, end_authz_dispatch
 from kx_mcp_core.launcher import _env_flag, _parse_bundles, build_app, main
 from kx_mcp_example import build_server as example
@@ -272,6 +275,94 @@ def test_a_timed_out_bundle_never_mounts_late_once_its_hang_clears(monkeypatch):
 
     after = {t.name for t in asyncio.run(app.list_tools())}
     assert after == before, f"a timed-out bundle mounted late: {sorted(after - before)}"
+
+
+def test_the_worker_builds_under_a_mount_budget_a_bundle_can_read(monkeypatch):
+    """The bound only holds if a bundle can cap its blocking calls by it, so it must see one.
+
+    `join(timeout)` cannot fire while a worker holds the GIL (an embedded-q connect does), so the
+    worker runs `build_server()` under `mount_budget(timeout)` and the bundle reads
+    `remaining_mount_budget()`. Without a timeout there is no worker and no budget.
+    """
+    seen = []
+
+    def _reads_budget(*_a, **_k):
+        seen.append(remaining_mount_budget())
+        return example()
+
+    _stub_bundles(monkeypatch, ex=_reads_budget)
+    build_app(["ex"], name="t", mount_timeout=5)
+    monkeypatch.delenv("KX_MCP_MOUNT_TIMEOUT", raising=False)
+    build_app(["ex"], name="t")
+
+    assert seen[0] is not None and 0 < seen[0] <= 5
+    assert seen[1] is None
+
+
+def _hold_the_gil_for(seconds: float) -> int:
+    """How big a `sum(range(n))` takes at least `seconds`: one C call that never releases the GIL."""
+    n = 1_000_000
+    while True:
+        started = time.monotonic()
+        sum(range(n))
+        if time.monotonic() - started >= seconds:
+            return n
+        n *= 2
+
+
+needs_gil = pytest.mark.skipif(
+    not getattr(sys, "_is_gil_enabled", lambda: True)(), reason="needs a GIL to hold"
+)
+
+
+@needs_gil
+def test_a_gil_holding_build_that_finishes_late_is_mounted_and_the_overrun_logged(
+    monkeypatch, caplog
+):
+    """`join` returns late when the worker holds the GIL, and the worker may have finished by then.
+
+    The old log said "did not finish starting within <timeout>s", quoting the configured bound when
+    the real wait was many times longer. A worker that finished is mounted (we did wait for it, and
+    nothing was declared unavailable), with a warning that states the real elapsed time.
+    """
+    n = _hold_the_gil_for(0.4)
+
+    def _holds_the_gil(*_a, **_k):
+        sum(range(n))
+        return example()
+
+    _stub_bundles(monkeypatch, slow=_holds_the_gil)
+    with caplog.at_level(logging.WARNING, logger="kx_mcp_core.launcher"):
+        app = build_app(["slow"], name="t", mount_timeout=0.05)
+
+    assert "slow_echo" in {t.name for t in asyncio.run(app.list_tools())}
+    (record,) = [r for r in caplog.records if "over KX_MCP_MOUNT_TIMEOUT=0.05s" in r.getMessage()]
+    elapsed = float(re.search(r"after (\d+\.\d)s", record.getMessage()).group(1))
+    assert elapsed >= 0.3
+
+
+@needs_gil
+def test_an_abandoned_bundle_log_reports_the_real_elapsed_time(monkeypatch, caplog):
+    """The give-up line states how long we actually waited next to the configured bound."""
+    n = _hold_the_gil_for(0.4)
+    release = threading.Event()
+
+    def _holds_the_gil_then_hangs(*_a, **_k):
+        sum(range(n))
+        release.wait(30)  # bounded so the abandoned thread cannot outlive the test session
+        return example()
+
+    _stub_bundles(monkeypatch, slow=_holds_the_gil_then_hangs, ok=example)
+    try:
+        with caplog.at_level(logging.ERROR, logger="kx_mcp_core.launcher"):
+            build_app(["slow", "ok"], name="t", mount_timeout=0.05)
+    finally:
+        release.set()
+
+    (record,) = [r for r in caplog.records if "gave up after" in r.getMessage()]
+    elapsed = float(re.search(r"gave up after (\d+\.\d)s", record.getMessage()).group(1))
+    assert elapsed >= 0.3
+    assert "(KX_MCP_MOUNT_TIMEOUT=0.05s)" in record.getMessage()
 
 
 def test_bad_bundle_name_does_not_crash_healthy_bundles_alongside_it():

@@ -37,7 +37,8 @@ cp tests/deterministic/realidp/envs/.env.keycloak.example \
    tests/deterministic/realidp/envs/.env.keycloak
 # Fill in KC_BASE, KC_REALM, KC_CLIENT_ID, KX_MCP_AUTH_AUDIENCE
 
-# 4. Install the kx.auth module onto the q runtime's module path (idempotent symlink)
+# 4. Install kx.auth + kx.rbac onto the q runtime's module path (idempotent). They are maintained in
+#    KxSystems/kx-auth, not in this repo; add kx_auth_src=/path/to/kx-auth for a local checkout.
 just install-modules
 
 # 5. Run
@@ -69,11 +70,15 @@ uv run pytest tests/deterministic/realidp/kdbx -m kdbx -v
 
 - `.s.init[]` + an inlined `trades` table (kept local rather than loading the broader
   `examples/host.q` smoke-test host).
-- `.kx.auth:use`kx.auth` — loads the identity-assertion module from `~/.kx/mod/kx/auth`
-  (symlinked to [`modules/kx/auth/`](../../../../modules/kx/auth/) by `just install-modules`).
-- `setPolicy`: the real Keycloak `trader` group may `read`/`write` `data.trades` (default-deny); the
-  service-account login (`kxmcp`, matching `KDBX_DB_USERNAME`) may `assert` `kx.identity` (the
-  `bind[]` caller-gate).
+- `.kx.auth:use`kx.auth` / `.kx.rbac:use`kx.rbac` — loads the identity-assertion module and its peer
+  policy engine from `~/.kx/mod/kx/`, put there by `just install-modules` from
+  [KxSystems/kx-auth](https://github.com/KxSystems/kx-auth) (not vendored in this repo).
+- Grants declared through `.kx.rbac.grant[…]`, then installed with
+  `.kx.auth.setPolicy .kx.rbac.policy[]` — no hand-rolled decision function. The real Keycloak
+  `trader` group may `read`/`write` `data.trades` (both verbs stated explicitly: `kx.rbac` has no verb
+  subsumption); the service-account login (`kxmcp`, matching `KDBX_DB_USERNAME`) reaches
+  `` `superUsers `` via `setLoginGroups`, which holds `assert` on `kx.identity` (the `bind[]`
+  caller-gate).
 - `.s.e` is wrapped so every SQL query is gated by `.kx.auth.authorize[`read;`data.trades]`.
 
 `kdbx_ferry_container_url` (session-scoped, depends on the fixture above) spawns the MCP

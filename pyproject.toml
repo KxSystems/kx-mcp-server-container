@@ -58,7 +58,8 @@ dev = [
     "kx-auth-cli",
     # Tests mint RS256 tokens with PyJWT (verify_token validates them with joserfc — cross-library
     # coverage). Declared here so the lean packages' tests don't rely on a transitive-via-fastmcp import.
-    "pyjwt",
+    # The 2.15.0 floor clears the signature-verification advisories published against 2.13.0.
+    "pyjwt>=2.15.0",
     # cryptography is the RSA backend used by PyJWT and FastMCP's JWTVerifier. Declared explicitly
     # so the auth test suite owns its dependency rather than relying on a transitive import.
     "cryptography",

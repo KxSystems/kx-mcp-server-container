@@ -12,6 +12,7 @@ by `mount_metrics_route`).
 from .assembly import load_build_server, make_parent, mount_bundle, try_mount_bundle
 from .discovery import register_components
 from .logging import configure_logging
+from .mount_budget import mount_budget, remaining_mount_budget
 from .results import (
     FAILURE_STATUSES,
     STATUS_DENIED,
@@ -47,6 +48,8 @@ __all__ = [
     "make_parent",
     "mount_bundle",
     "try_mount_bundle",
+    "mount_budget",
+    "remaining_mount_budget",
     "load_build_server",
     "register_components",
     "configure_logging",

@@ -17,7 +17,17 @@
 / `authorize`/`setPolicy` are covered above; `setClaims`/`valid` have their own real-q regression in
 / kx_auth_rebind.q; `require` is exercised transitively throughout (both entitled[] and authorize[]
 / route through it).
-\l modules/kx/auth/init.q
+/ The module is NOT vendored in this repo — it is canonical in kx-auth and resolved onto the q module
+/ path by `just install-modules`. Load it FLAT rather than with `use`: this regression asserts on
+/ PRIVATE state (promote / fromJson / serveHttp are not in the export dict), which `use` cannot reach.
+/ $KX_AUTH_MOD overrides the module root when working from a checkout at a non-standard path.
+/ QPATH may be a ":"-separated list, so take the first entry (then ~/.kx/mod) that actually holds kx/auth.
+modRoot:{[] p:getenv`KX_AUTH_MOD; if[count p;:p];
+  d:":" vs getenv`QPATH; c:((d where 0<count each d),enlist getenv[`HOME],"/.kx/mod"),\:"/kx";
+  h:c where {not ()~key hsym `$x,"/auth/init.q"} each c; $[count h; first h; last c]}[];
+if[()~key hsym `$modRoot,"/auth/init.q"; '"no kx.auth at ",modRoot," — run `just install-modules` (or set KX_AUTH_MOD)"];
+system"l ",modRoot,"/auth/init.q";
+
 u:.z.u;   / the in-process caller login — what bind passes to the policy as the subject's `sub`
 
 / 1. default-deny: policy unset (deny-all) -> bind refuses (a mere connection is not enough).
@@ -56,14 +66,20 @@ r6:(`data.trades`data.orders)~entitled[`read;`data.trades`data.orders]; / all en
 r7:(enlist`data.trades)~entitled[`read;`data.trades`data.secrets]; / partial -> strict entitled subset
 r8:0=count entitled[`read;enlist`data.secrets];                / none entitled -> EMPTY vector, not a signal
 r9:0=count entitled[`read;`symbol$()];                          / empty input short-circuits, no policy consult
-/    unbind THIS handle. Must go through a NILADIC FUNCTION, not a bare top-level `::` — reassigning
-/    the module's private `bound` directly from top-level script scope leaves it in a state where the
-/    very next global read of `bound` signals 'type (reproducible; unrelated to the one-row-table
-/    representation fix). kx_auth_rebind.q's own `reset[]` sidesteps this the same way — copy it.
-resetBound:{[] bound::(`int$())!(); };
-resetBound[];
-e10:@[{entitled[`read;enlist`data.trades];`ok};(::);{x}];
-r10:$[10h=type e10; "denied"~6#e10; 0b];                        / unbound -> 'denied (require[]'s gate), not `()
+/ 10. THE SUBJECT RULE (amends M4's unbound-handle contract). An unbound handle no longer FAILS: it
+/    falls back to the connecting login's own principal, which is default-deny until mapped through
+/    setLoginGroups. So the guarantee moved rather than weakened — access is still refused, but by the
+/    POLICY naming the login rather than by require[]'s "no principal" gate. Pin all three halves, or a
+/    regression could restore the old signal (or, far worse, grant the fallback something).
+/    Unbind through the module's own `clear` verb: reassigning the private `bound` store from top-level
+/    script scope leaves it in a state where the next global read signals 'type.
+clear .z.w;
+p10:current[];                                                  / resolves — no signal — to the LOGIN
+c10a:(.z.u~p10`sub) and (0=count p10`groups) and (`kdb.local~p10`iss);
+c10b:0=count entitled[`read;enlist`data.trades];                / unmapped login entitles nothing
+e10:@[{authorize[`read;`data.trades];`ok};(::);{x}];
+c10c:$[10h=type e10; "denied"~6#e10; 0b];                       / ... and authorize still signals 'denied
+r10:c10a and c10b and c10c;
 bind[`sub`groups!(`alice;enlist`trader)];                       / rebind for the checks below
 
 / 11. configure[]: rejects a malformed arg; a good (`user;"pw") arg makes pwCheck ENFORCE it — before

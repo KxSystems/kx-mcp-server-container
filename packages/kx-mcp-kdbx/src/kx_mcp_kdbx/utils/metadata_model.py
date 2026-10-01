@@ -9,13 +9,14 @@ from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from kx_mcp_kdbx.settings import KDBConfig
-from kx_mcp_kdbx.utils.observe import q, timed
+from kx_mcp_kdbx.utils.observe import q
 from kx_mcp_kdbx.utils import kdbx as kdbx_utils
 from kx_mcp_kdbx.utils.aimeta import MetadataCache, MetadataDetection, detect_metadata
 from kx_mcp_kdbx.utils.authz_kx_entitlements import consult_data_gate
 from kx_mcp_kdbx.utils.denial import record_denial
 from kx_mcp_kdbx.utils.embeddings_helpers import get_csv_data
 from kx_mcp_kdbx.utils.kdbx import get_kdb_connection
+from kx_mcp_kdbx.utils.non_finite import NON_FINITE_ERROR_TYPE, has_non_finite
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,8 @@ MAX_PREVIEW_ROWS = 100
 # parsed in Python. `MAX_PREVIEW_ROWS` capped the rows, never the tables. Tables past this cap still
 # appear in full — name, columns, row count, partitioned flag — they just carry no sample rows, which
 # `live.rowSource == "none"` already expresses, so no contract change. A caller that wants a specific
-# table's sample asks for that table (`table=` requests are never capped).
+# table's sample asks for that table (`table=` requests are never capped). A preview that was
+# attempted and FAILED is a different state: `rowSource: "error"` plus `live.previewError`.
 MAX_PREVIEW_TABLES = 20
 _INTERNAL_TABLE_SUFFIXES = ("document", "stats", "token")
 
@@ -41,8 +43,19 @@ _META = "{.j.j 0!meta x}"
 # each` trap idiom as _ROW_COUNTS above, so a single unreadable table yields an empty column list
 # rather than losing the whole batch.
 _META_BATCH = "{.j.j x!@[{0!meta x};;()] each x}"
-_PREVIEW = "{[n;t;d] r:n sublist get t; .j.j ((cols r) except d)#r}"
+# `0!` unkeys a keyed table first: `cols#` on a keyed table signals 'length, so without it a keyed
+# table never previewed.
+_PREVIEW = "{[n;t;d] r:n sublist 0!get t; .j.j ((cols r) except d)#r}"
 _PREVIEW_PARTITIONED = "{[n;t;d] r:.Q.ind[get t;til n]; .j.j ((cols r) except d)#r}"
+# The same previews with +/-infinity in float and real columns replaced by that type's null, which
+# `.j.j` emits as JSON null. Issued only after the plain preview failed on a bare `inf` token, so a
+# finite table keeps its single round trip. A nested float column (a list per cell) is not reached,
+# and still fails as `non_finite_number`.
+_FINITE = "@[r;where(type each flip r)in 8 9h;{@[x;where 0w=abs x;:;first 0#x]}]"
+_PREVIEW_FINITE = "{[n;t;d] r:n sublist 0!get t; r:((cols r) except d)#r; .j.j " + _FINITE + "}"
+_PREVIEW_PARTITIONED_FINITE = (
+    "{[n;t;d] r:.Q.ind[get t;til n]; r:((cols r) except d)#r; .j.j " + _FINITE + "}"
+)
 
 
 def _decode(value: Any) -> Any:
@@ -113,7 +126,7 @@ def _project_reference(reference: dict[str, Any]) -> dict[str, Any]:
 def _project_function(function: dict[str, Any]) -> dict[str, Any]:
     projected: dict[str, Any] = {
         key: copy.deepcopy(function[key])
-        for key in ("name", "desc", "examples", "uses", "tags")
+        for key in ("name", "desc", "examples", "uses", "authorize", "tags")
         if key in function
     }
     projected["params"] = [
@@ -186,8 +199,9 @@ def is_internal_table_name(name: str) -> bool:
 
 
 def live_table_names(conn) -> list[str]:
-    with timed("tables"):
-        names = conn.tables(None).py()
+    # A plain `tables[]` query, not PyKX's `conn.tables(None)`: that helper first sends its own
+    # is-this-a-function probe, so it was two round trips on the wire counted as one.
+    names = q(conn, "tables", "tables[]").py()
     return [str(_decode(name)) for name in names]
 
 
@@ -231,7 +245,9 @@ def _batch_columns_from_meta(conn, tables: list) -> dict:
     if not tables:
         return {}
     try:
-        batched = _loads(conn(_META_BATCH, tables).py())
+        # Through `q()` like every other round trip, so it is counted and spanned as `meta`; a bare
+        # `conn(...)` here left the batch out of `kdbx_qipc_calls_total` entirely.
+        batched = _loads(q(conn, "meta", _META_BATCH, tables).py())
     except Exception as error:
         logger.warning(f"Could not batch-read meta for {len(tables)} tables: {error}")
         return {}
@@ -274,18 +290,50 @@ def _live_block(
     }
     if not rows or not row_count:
         return live
-    query = _PREVIEW_PARTITIONED if table in partitioned else _PREVIEW
+    is_partitioned = table in partitioned
+    args = (min(rows, row_count), table, _vector_columns(table, config))
     try:
-        preview = _loads(
-            q(
-                conn, "preview", query, min(rows, row_count), table, _vector_columns(table, config)
-            ).py()
-        )
+        raw = q(conn, "preview", _PREVIEW_PARTITIONED if is_partitioned else _PREVIEW, *args).py()
+        try:
+            preview = _loads(raw)
+        except ValueError:
+            if not has_non_finite(raw):
+                raise
+            # `.j.j` wrote bare `inf`: re-read with infinities projected to null, and flag it, since
+            # a projected null is otherwise indistinguishable from a q null.
+            finite = _PREVIEW_PARTITIONED_FINITE if is_partitioned else _PREVIEW_FINITE
+            raw = q(conn, "preview", finite, *args).py()
+            try:
+                preview = _loads(raw)
+            except ValueError as error:
+                if not has_non_finite(raw):
+                    raise
+                return _preview_failed(
+                    live,
+                    table,
+                    NON_FINITE_ERROR_TYPE,
+                    "the rows hold non-finite floats (infinity) that could not be projected to "
+                    f"null, e.g. inside a nested column: {error}",
+                )
+            live["nonFiniteAsNull"] = True
         if preview:
             live["preview"] = preview
             live["rowSource"] = "preview"
     except Exception as error:
-        logger.warning(f"Could not preview table '{table}': {error}")
+        return _preview_failed(live, table, "preview_failed", str(error))
+    return live
+
+
+def _preview_failed(live: dict[str, Any], table: str, code: str, message: str) -> dict[str, Any]:
+    """Report a failed preview in the document, not only in the server log.
+
+    It used to be logged and dropped, leaving `rowSource: "none"`, which reads as "past the preview
+    cap": a silent success for a table the caller asked for by name. `_reconcile_row_data` may still
+    fall back to annotated `sampleData`; `previewError` stays either way.
+    """
+    logger.warning(f"Could not preview table '{table}': {message}")
+    live["rowSource"] = "error"
+    live["previewError"] = {"code": code, "message": message}
     return live
 
 
@@ -293,7 +341,7 @@ def _reconcile_row_data(entry: dict[str, Any], live: dict[str, Any]) -> None:
     if live.get("preview"):
         entry.pop("sampleData", None)
     elif entry.get("sampleData"):
-        live["rowSource"] = "sampleData"
+        live["rowSource"] = "sampleData"  # also after a failed preview; `previewError` says why
 
 
 def _entitled_names(

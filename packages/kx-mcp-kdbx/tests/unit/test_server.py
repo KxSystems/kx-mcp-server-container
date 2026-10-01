@@ -97,6 +97,8 @@ class TestMcpServer:
             username="user",
             password="test-pass",
             timeout=5,
+            connection_timeout=None,  # no mount budget here, so PyKX times the connect by `timeout`
+            reconnection_attempts=-1,  # the pre-flight shares `_connect`: kx-mcp owns reconnection
             tls=False,
         )
         mock_client.close.assert_called_once()

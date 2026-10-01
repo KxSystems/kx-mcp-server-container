@@ -10,6 +10,7 @@ from kx_mcp_kdbx.utils.kdbx import get_kdb_connection, config_from_ctx
 from kx_mcp_kdbx.utils.denial import denial_response, denial_from_decision
 from kx_mcp_kdbx.utils.authz_kx_entitlements import consult_data_gate, derive_tables
 from kx_mcp_kdbx.utils.observe import q, record_sql_result
+from kx_mcp_kdbx.utils.non_finite import NON_FINITE_ERROR_TYPE, has_non_finite
 from kx_mcp_core import tool_result
 from kx_mcp_core.auth import authorize
 
@@ -35,11 +36,6 @@ MAX_ROWS_RETURNED = 1000
 _DANGEROUS_KEYWORDS = ('INSERT', 'DROP', 'DELETE', 'TRUNCATE', 'ALTER', 'CREATE')
 
 _STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
-
-# q's `.j.j` renders +/-infinity as the bare tokens `inf` / `-inf`, which are NOT valid JSON, so
-# `json.loads` fails with a generic parse error that gives no hint the real cause is a non-finite
-# float rather than a malformed query. (A null float `0n` is fine — `.j.j` emits a proper JSON null.)
-_NON_FINITE_JSON = re.compile(rb"(?<![\w.])-?(?:inf|infinity|nan)(?![\w.])", re.IGNORECASE)
 
 
 def _strip_literals(query: str) -> str:
@@ -147,11 +143,12 @@ def run_query_impl(sqlSelectQuery: str, config=None) -> Dict[str, Any]:
         try:
             rows = json.loads(payload.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError) as parse_error:
-            if isinstance(payload, bytes) and _NON_FINITE_JSON.search(payload):
+            # `.j.j` emits bare `inf` for +/-infinity (see utils/non_finite.py).
+            if has_non_finite(payload):
                 logger.error("Query result contains non-finite floats; .j.j emitted invalid JSON")
                 return {
                     "status": "error",
-                    "error_type": "non_finite_number",
+                    "error_type": NON_FINITE_ERROR_TYPE,
                     "message": (
                         "The query succeeded but its result contains non-finite floating-point "
                         "values (infinity or NaN), which cannot be represented in JSON. Filter or "

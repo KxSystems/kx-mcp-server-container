@@ -141,13 +141,22 @@ def _validate_mode(mode: str) -> None:
         )
 
 
-def configure_authz(settings: Optional[AuthzSettings] = None) -> AuthzSettings:
+def configure_authz(
+    settings: Optional[AuthzSettings] = None, *, require_adapter: bool = True
+) -> AuthzSettings:
     """Resolve + cache :class:`AuthzSettings` and register the built-in adapter for the configured
     mode. Called by the launcher at startup (so a bad policy file fails loudly there, not
-    mid-request) and by tests; the decorator calls it lazily on first use if never configured."""
+    mid-request) and by tests; the decorator calls it lazily on first use if never configured.
+
+    ``require_adapter=False`` defers the "is this mode's adapter registered?" check to a later
+    :func:`require_authz_adapter`. The launcher needs that: a backend's adapter (``kdbx_rbac``)
+    registers when its bundle is imported, which is after startup config is resolved and before
+    anything is served. ``static`` is unaffected: its policy file is still loaded and checked here.
+    """
     global _SETTINGS
     settings = settings or AuthzSettings()
-    _validate_mode(settings.mode)
+    if require_adapter:
+        _validate_mode(settings.mode)
     if settings.mode == "static":
         # Lazy import: only pull in yaml / the adapter when static mode is actually used. Construction
         # loads + validates the policy file, so a bad path raises here (startup), not per request.
@@ -161,6 +170,17 @@ def configure_authz(settings: Optional[AuthzSettings] = None) -> AuthzSettings:
         register_authz_adapter("static", adapter)
     _SETTINGS = settings
     return settings
+
+
+def require_authz_adapter(settings: Optional[AuthzSettings] = None) -> None:
+    """Raise ``ValueError`` unless the configured mode has a registered adapter.
+
+    The second half of ``configure_authz(require_adapter=False)``: call it once every bundle has
+    been imported, so a mode whose provider bundle never loaded (a typo, a failed import) still
+    fails at startup. Nothing is served without it, and nothing fails open either way:
+    :func:`~kx_auth_core.decide` raises on an unknown strategy.
+    """
+    _validate_mode((settings or _SETTINGS or AuthzSettings()).mode)
 
 
 def _settings() -> AuthzSettings:

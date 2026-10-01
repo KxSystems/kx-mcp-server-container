@@ -79,3 +79,29 @@ def test_configure_logging_is_idempotent(fresh_root_logging):
     configure_logging("INFO")
     tagged = [h for h in logging.getLogger().handlers if getattr(h, _HANDLER_TAG, False)]
     assert len(tagged) == 1
+
+
+@pytest.mark.parametrize(
+    "name, level, admitted",
+    [
+        # the brand namespace passes at every level (the handler's own level does the gating)
+        ("kx_mcp.audit", logging.INFO, True),
+        ("kx_mcp_kdbx.utils.kdbx", logging.DEBUG, True),
+        # the OpenTelemetry tree passes only at WARNING and above: export failures, not chatter
+        ("opentelemetry.exporter.otlp.proto.grpc.exporter", logging.WARNING, True),
+        ("opentelemetry.sdk.trace.export", logging.ERROR, True),
+        ("opentelemetry", logging.CRITICAL, True),
+        ("opentelemetry.exporter.otlp.proto.grpc.exporter", logging.INFO, False),
+        ("opentelemetry.sdk.trace.export", logging.DEBUG, False),
+        # everything else stays dropped, whatever the level, including look-alike prefixes
+        ("opentelemetry_extra", logging.WARNING, False),
+        ("httpx", logging.WARNING, False),
+        ("uvicorn.error", logging.ERROR, False),
+        ("root", logging.CRITICAL, False),
+    ],
+)
+def test_brand_filter_policy_table(name, level, admitted):
+    """Which namespaces and levels reach the handler. OTel warnings are the operator's only sign
+    spans are being dropped, so they must pass; third-party noise must not."""
+    record = logging.LogRecord(name, level, __file__, 0, "msg", None, None)
+    assert _BrandFilter().filter(record) is admitted

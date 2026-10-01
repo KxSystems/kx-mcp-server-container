@@ -2,7 +2,9 @@ __pycache__*
 *.py[cod]
 *$py.class
 .venv
+.venv-*
 .env
+logs/
 .coverage
 coverage.xml
 report.xml
@@ -24,3 +26,7 @@ envs/.env.*
 # Real-IdP compose runtime state (bind-mounted kdbai DB + ACL dirs) — never commit
 tests/deterministic/realidp/setup/*/kdbai-data/
 tests/deterministic/realidp/setup/*/acl-data/
+
+# aimeta writes an annotation snapshot beside any q host that calls .kx.aimeta.init[] — a run
+# artifact, regenerated on every start, never source
+.aimeta/

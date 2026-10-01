@@ -32,9 +32,12 @@ secrets:([]
   memo : ("payroll band review"; "M&A due diligence notes"; "incident postmortem — unreleased")
  );
 
-// --- identity assertion (the kx.auth KDB-X module) ------------------------------------------------
+// --- identity assertion + the peer policy engine (the kx.auth / kx.rbac KDB-X modules) -----------
 // MUST assign to the global `.kx.auth` so the container's qIPC call `.kx.auth.bind` resolves.
+// Both peers are resolved from the q module path; they are canonical in the kx-auth repo and are NOT
+// vendored here — `just install-modules` puts them on $QPATH.
 .kx.auth:use`kx.auth;
+.kx.rbac:use`kx.rbac;
 
 // The service-account login the container connects as (KDBX_DB_USERNAME/PASSWORD). kx.auth's OWN
 // .z.pw wiring is the connection gate here (not q's built-in -u/-U) — defining .z.pw (which
@@ -48,20 +51,28 @@ secrets:([]
 .kx.auth.configure[(.gate.svcUser; .gate.svcPassword)];
 .kx.auth.activate[];
 
-// --- authorization policy (the data-level S/A/R seam, consulted by entitled[]) ---------------------
-// Group x resource x action grant: `trader` may read `data.trades`; nobody is granted `data.secrets` — proves the
+// --- login groups: the service-account LOGIN's own identity ---------------------------------------
+// A kdb+ login carries no IdP groups, so the module's login->groups map gives the service account
+// some. That is why the assert grant below is group-keyed like every other row, rather than needing a
+// second `usr`-keyed table: the old two-table shape was a policy-layer patch for this identity-layer
+// gap. An UNMAPPED login resolves to no groups and so matches no grant — default-deny still holds.
+.kx.auth.setLoginGroups[(enlist .gate.svcUser)!enlist `superUsers];
+
+// --- authorization policy: ONE grant table, ONE engine (kx.rbac) ----------------------------------
+// Declared through the engine's own admin verbs rather than a hand-rolled decision function. In-process
+// calls bypass the `admin`/`kx.rbac` gate, which is what permits this bootstrap. No configureStore[]
+// here: persistence is only needed by save[]/load[], which this regression does not exercise.
+//
+// DATA grant: `trader may read `data.trades. Nobody is granted `data.secrets — that is what proves the
 // none-entitled and partial-entitled (scope-down) cases with one real second table.
-.gate.grants:([] grp:enlist`trader; res:enlist`data.trades; act:enlist`read);
-// Admin grant (the bind[] assert gate): the service-account LOGIN (.z.u, carried as `sub) may
-// `assert on `kx.identity. Keyed on the user, not a group.
-.gate.adminGrants:([] usr:enlist .gate.svcUser; act:enlist`assert; res:enlist`kx.identity);
+.kx.rbac.grant[`trader; `read; `data.trades];
+// ASSERT grant (the bind[] gate): the service account's TIER may assert an identity. Group-keyed, and
+// reached from the login through the map above.
+.kx.rbac.grant[`superUsers; `assert; `kx.identity];
 
-.gate.allowed:{[p;a;r]
-  byGroup:0<count select from .gate.grants      where grp in p`groups, res=r, act=a;
-  byUser: 0<count select from .gate.adminGrants where usr=p`sub, res=r, act=a;
-  byGroup or byUser };
-
-.kx.auth.setPolicy[.gate.allowed];
+// Install the peer engine's scalar decision function — explicit, so a bare `use` changes nothing.
+.kx.auth.setPolicy .kx.rbac.policy[];
 
 -1 "";
--1 "kdbx_data_gate_host ready: identity assertion ON, `trader may read `data.trades, `data.secrets ungranted";
+-1 "kdbx_data_gate_host ready: identity assertion ON, kx.rbac installed — ",(string count .kx.rbac.grants[])," grants";
+-1 "  `trader may read `data.trades; `data.secrets ungranted; `superUsers may `assert `kx.identity";

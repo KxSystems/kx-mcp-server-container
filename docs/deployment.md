@@ -32,10 +32,7 @@ license.
 
 ### 2. From the published wheels (no checkout) — `uvx`
 
-> **PyPI carries a pre-release.** `0.5.0b1` is on PyPI as a PEP 440 pre-release — installable by
-> anyone, no credentials.
-
-`uvx` runs the container in an ephemeral environment from one command, straight from PyPI:
+The packages are on PyPI, installable by anyone with no credentials. `uvx` runs the container in an ephemeral environment from one command, straight from PyPI:
 
 ```bash
 uvx --from kx-mcp-core --with kx-mcp-kdbx kx-mcp --bundles kdbx
@@ -45,13 +42,11 @@ uvx --from kx-mcp-core --with kx-mcp-kdbx kx-mcp --bundles kdbx
 executable name); each `--with` adds a backend bundle wheel (`kx-mcp-kdbx`/`-kdbai`, repeat
 for several) matching the `--bundles` list.
 
-That unpinned command resolves `0.5.0b1` **because it is currently the only version on PyPI** — a
-resolver falls back to a pre-release when no final release is available. The same command will switch
-to the first final release once one is published, so pin explicitly when you depend on a version (all
-packages version in lockstep):
+That unpinned command resolves the latest release, so pin explicitly when you depend on a version
+(all packages version in lockstep):
 
 ```bash
-uvx --from kx-mcp-core==0.5.0b1 --with kx-mcp-kdbx==0.5.0b1 kx-mcp --bundles kdbx
+uvx --from kx-mcp-core==0.5.0 --with kx-mcp-kdbx==0.5.0 kx-mcp --bundles kdbx
 ```
 
 ### 3. Assemble your own server (downstream repo)
@@ -155,6 +150,10 @@ Container serving (`KX_MCP_*`, read by the `kx-mcp` launcher):
 | `KX_MCP_MOUNT_TIMEOUT` | `0` (off) | Seconds to wait for each backend's startup before serving without it (see below) |
 | `KX_MCP_METRICS` / `KX_MCP_TRACING` | _(off)_ | Opt-in Prometheus metrics + OpenTelemetry tracing — see the [observability guide](observability.md) |
 
+Each variable that defaults a launcher flag is validated like the flag itself: an invalid value
+(`KX_MCP_TRANSPORT=sse`, a non-numeric `KX_MCP_PORT` or `KX_MCP_MOUNT_TIMEOUT`, an unknown
+`KX_MCP_LOG_LEVEL`, a non-boolean `KX_MCP_EXIT_ON_MOUNT_FAILURE`) is a usage error, exit code 2.
+
 **Mount-failure posture.** By default a backend whose eager pre-flight fails is disabled with a
 `WARNING` and the container keeps serving the backends that came up — the right behaviour when you
 mount several, since one unreachable database shouldn't take the others down. Set
@@ -175,6 +174,13 @@ it happens. A backend given up on this way stays given up on — it can never ap
 startup finally completes. Use it as a backstop for a backend you cannot configure, not as the
 primary mechanism.
 
+The bound holds only for blocking calls a backend caps by the mount budget the container hands it
+(`kx_mcp_core.remaining_mount_budget()`); the kdb-x backend caps its connect this way from this
+release. A call that holds the Python interpreter lock (the GIL) and ignores the budget can still
+overrun it, because the container cannot even stop waiting until that call returns. The log line
+reports the real elapsed time next to the configured bound (`gave up after 32.1s
+(KX_MCP_MOUNT_TIMEOUT=3.0s)`), and a backend that finished late is mounted with a warning.
+
 Independently of that flag, requesting bundles and mounting **none** of them always exits non-zero:
 a parent with no backends serves no tools, so staying alive would only present a healthy-looking
 process with nothing behind it.
@@ -188,7 +194,7 @@ Backend connection fragments (each owned by its bundle — full tables in the bu
 
 | Backend | Key variables (defaults) |
 | --- | --- |
-| kdbx | `KDBX_DB_HOST` (`127.0.0.1`) · `KDBX_DB_PORT` (`5010`) · `KDBX_DB_USERNAME`/`_PASSWORD`/`_PASSWORD_FILE` · `KDBX_DB_TLS` (`false`) · `KDBX_DB_TIMEOUT` (`1`) · `KDBX_DB_RETRY` (`2`) · `KDBX_DB_ASSERT_IDENTITY` (`false`) · semantic metadata cache: `KDBX_DB_AIMETA_CACHE_TTL` (`300`, `0` disables) · vector-search: `KDBX_DB_EMBEDDING_CSV_PATH`, `KDBX_DB_METRIC` (`CS`), `KDBX_DB_K` (`5`) |
+| kdbx | `KDBX_DB_HOST` (`127.0.0.1`) · `KDBX_DB_PORT` (`5010`) · `KDBX_DB_USERNAME`/`_PASSWORD`/`_PASSWORD_FILE` · `KDBX_DB_TLS` (`false`) · `KDBX_DB_TIMEOUT` (`1`) · `KDBX_DB_RETRY` (`2`: retries after a failed connect, so attempts = retry + 1) · `KDBX_DB_ASSERT_IDENTITY` (`false`) · semantic metadata cache: `KDBX_DB_AIMETA_CACHE_TTL` (`300`, `0` disables) · vector-search: `KDBX_DB_EMBEDDING_CSV_PATH`, `KDBX_DB_METRIC` (`CS`), `KDBX_DB_K` (`5`) |
 | kdbai | `KDBAI_DB_HOST` (`127.0.0.1`) · `KDBAI_DB_PORT` (mode default: qipc `8082`, REST `8081`; explicit wins) · `KDBAI_DB_MODE` (`qipc`\|`rest`, default `qipc`) · `KDBAI_DB_DATABASE_NAME` (`default`) · `KDBAI_DB_OUTBOUND_STRATEGY` + OIDC detail (see [auth guide](auth.md)) · hybrid-search weights `KDBAI_DB_VECTOR_WEIGHT`/`_SPARSE_WEIGHT` (`0.7`/`0.3`) |
 
 Auth variables (`KX_MCP_AUTH*`, `KX_MCP_AUTHZ*`, outbound strategies): the
@@ -223,5 +229,5 @@ Auth variables (`KX_MCP_AUTH*`, `KX_MCP_AUTHZ*`, outbound strategies): the
 | First KDB.AI passthrough call fails | Startup checked socket reachability only; verify the caller bearer is accepted by KDB.AI and its principal has the required ACL. |
 | qIPC connect *times out* on macOS at `:5000` | AirPlay owns `:5000` on macOS and swallows connections — this is why the kdb-x default is `:5010`. Don't deploy a backend on `:5000` on a Mac. |
 | `401` on every authed call / client can't log in | Work the inbound checklist in the [auth guide](auth.md#troubleshooting) — issuer/audience mismatch and a missing/wrong `KX_MCP_AUTH_RESOURCE_URL` cover most cases. |
-| `uvx`/`uv` reports no solution for `kx-mcp-core`, hinting a pre-release is available | PyPI currently holds only the `0.5.0b1` pre-release and pre-releases are disabled in that context — pass `--prerelease=allow` or pin the exact version (`kx-mcp-core==0.5.0b1`). |
+| `uvx`/`uv` reports no solution for `kx-mcp-core`, hinting a pre-release is available | The version you asked for is a pre-release (e.g. `0.5.0b2`) and pre-releases are disabled in that context. Pin it exactly (`kx-mcp-core==0.5.0b2`), pass `--prerelease=allow`, or use a final release. |
 | Audit lines don't appear | You're embedding `make_parent` in custom glue without calling `configure_logging()` — the launcher does this for you; custom entry points must too. |

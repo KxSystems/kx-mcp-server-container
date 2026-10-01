@@ -29,7 +29,9 @@ cd /path/to/kx-mcp-server-container   # if you aren't already there
 ## Prerequisites
 
 - `q` (KDB-X), `uv`, `just`, and Claude Code on PATH.
-- The `kx.auth` module on the q module path: `just install-modules`.
+- The `kx.auth` and `kx.rbac` modules on the q module path: `just install-modules`. They live in
+  [KxSystems/kx-auth](https://github.com/KxSystems/kx-auth), not in this repo; from a local checkout use
+  `just kx_auth_src=/path/to/kx-auth install-modules`.
 - The optional `kx.aimeta` module on the q module path to exercise semantic table and function
   discovery. Install aimeta and its four runtime dependencies (`kx.ax`, `kx.fusion`, `kx.printf`,
   and `kx.log`) by following the upstream

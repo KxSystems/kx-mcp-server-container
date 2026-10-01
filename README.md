@@ -126,8 +126,8 @@ uvx --from kx-mcp-core --with kx-mcp-kdbx kx-mcp --bundles kdbx
 bundle wheel matching the `--bundles` list. The kdb-x licence resolves from a co-located kdb-x
 install exactly as above.
 
-> **PyPI currently holds `0.5.0b1`, a pre-release.** The unpinned command works because it is the only
-> version there; pin `==0.5.0b1` to stay on it once a final release exists.
+> The unpinned command resolves the latest release. All packages version in lockstep, so pin them
+> together (`kx-mcp-core==0.5.0 --with kx-mcp-kdbx==0.5.0`) when you depend on a version.
 
 Pinning and prerequisites:
 [deployment guide § quickstart](docs/deployment.md#quickstart--three-ways-to-run-it).
@@ -296,13 +296,15 @@ uv run kx-mcp --bundles kdbx --transport stdio
 
 The container itself starts with no further configuration, but the **backends** still have
 environmental prerequisites. An unreachable or unlicensed backend is **disabled with a warning while
-the parent keeps serving** (the `try_mount_bundle` "never crash the container" invariant) — so the
-spawn never crashes, it may just come up bare:
+the parent keeps serving the backends that did come up** (the `try_mount_bundle` "never crash the
+container" invariant). If **none** of the requested backends comes up, the container exits non-zero
+instead of serving nothing (see [`docs/deployment.md`](docs/deployment.md)), so a single-backend spawn
+like the one above fails fast:
 
 | Assumption | Required by | Symptom if missing | Resolution |
 |---|---|---|---|
 | A kdb license | the **`kdbx` bundle's PyKX** (forces `PYKX_LICENSED=true`) | `import pykx` fails → `kdbx` disabled | with a kdb-x install it's auto-resolved relative to the `q` binary (QHOME → `kc.lic`); only set `QLIC` for a standalone PyKX (e.g. CI) |
-| Reachable KDB-X + initialized SQL module on `:5010` | `kdbx` tools (qIPC) | pre-flight fails → `kdbx` disabled, parent serves bare | start a KDB-X host (e.g. `q examples/host.q`) |
+| Reachable KDB-X + initialized SQL module on `:5010` | `kdbx` tools (qIPC) | pre-flight fails → `kdbx` disabled (alone: the container exits non-zero) | start a KDB-X host (e.g. `q examples/host.q`) |
 | Reachable KDB.AI endpoint | `kdbai` tools | pre-flight fails → `kdbai` disabled | configure `KDBAI_DB_*` |
 
 ### Running with inbound auth
@@ -355,7 +357,7 @@ See [packages/kx-mcp-kdbx/README.md](packages/kx-mcp-kdbx/README.md) for setup a
 | `kdbx_run_sql_query` | Execute a SQL `SELECT` against KDB-X (write keywords blocked; max 1000 rows) | `query` | JSON query results |
 | `kdbx_similarity_search` | Dense-vector similarity search on a table _(needs KDB-X ≥ 0.1.2 + AI libs)_ | `table_name`, `query`, `n?` | Search results |
 | `kdbx_hybrid_search` | Hybrid dense + sparse (BM25) search on a table _(needs AI libs)_ | `table_name`, `query`, `n?` | Search results |
-| `kdbx_get_table_metadata` | Fetch one table under metadata contract v1 | `table`, `preview_rows?` (0–100) | Semantic schema + live state |
+| `kdbx_get_table_metadata` | Fetch one table under metadata contract v1 | `table`, `preview_rows?` (0–100) | Semantic schema + live state; `live.rowSource` is `preview`, `sampleData`, `none` (no preview taken) or `error` (preview failed, reason in `live.previewError`) |
 | `kdbx_refresh_metadata` | Reload recompiled aimeta metadata _(admin capability)_ | — | Refresh status + detected tier |
 
 **Resources**

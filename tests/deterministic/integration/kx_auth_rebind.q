@@ -19,7 +19,17 @@
 / .
 / Every check is a self-contained trapped lambda: the pre-fix module SIGNALS on several of these, and a
 / signal must fail only its own check rather than aborting the file and hiding the rest.
-\l modules/kx/auth/init.q
+/ The module is NOT vendored in this repo — it is canonical in kx-auth and resolved onto the q module
+/ path by `just install-modules`. Load it FLAT rather than with `use`: this regression drives the
+/ PRIVATE `bound` store and calls `promote` directly, neither of which is in the export dict.
+/ $KX_AUTH_MOD overrides the module root when working from a checkout at a non-standard path.
+/ QPATH may be a ":"-separated list, so take the first entry (then ~/.kx/mod) that actually holds kx/auth.
+modRoot:{[] p:getenv`KX_AUTH_MOD; if[count p;:p];
+  d:":" vs getenv`QPATH; c:((d where 0<count each d),enlist getenv[`HOME],"/.kx/mod"),\:"/kx";
+  h:c where {not ()~key hsym `$x,"/auth/init.q"} each c; $[count h; first h; last c]}[];
+if[()~key hsym `$modRoot,"/auth/init.q"; '"no kx.auth at ",modRoot," — run `just install-modules` (or set KX_AUTH_MOD)"];
+system"l ",modRoot,"/auth/init.q";
+
 setPolicy[{[p;a;r] 1b}];   / assert allowed throughout — this file is about the store, not the gate
 ok:{[f] $[`err~r:@[f;(::);{`err}]; 0b; r]};   / run a check, mapping any signal to a plain failure
 reset:{[] bound::(`int$())!(); };            / empty the whole store between checks (any handle)
@@ -80,7 +90,13 @@ r7:ok {reset[];
   (`trader`viewer~p`groups) and (-12h=type p`exp) and valid[] and `openid`profile~p`scopes };
 
 / ---- 8. clear[] still fully resets a handle (the disconnect path) --------------------------------
-r8:ok {reset[]; bind[`sub`tenant!(`alice;`acme)]; clear .z.w; (::)~current[] };
+/ Under the SUBJECT RULE, clear[] leaving the handle unbound no longer makes current[] `(::)` — it
+/ falls back to the connecting login's own principal. So assert what clear[] actually guarantees: the
+/ ASSERTED identity is gone (no `alice`, no `acme` tenant surviving the disconnect), and what is left
+/ is the login, default-deny with no groups. Pinning `(::)` here would re-assert the pre-amendment
+/ contract; pinning only "not alice" would miss the fallback silently gaining attributes.
+r8:ok {reset[]; bind[`sub`tenant!(`alice;`acme)]; clear .z.w; p:current[];
+  (.z.u~p`sub) and (0=count p`groups) and (`kdb.local~p`iss) and not `tenant in key p };
 
 flags:(r1;r2;r3;r4;r5;r6;r7;r8);
 -1 "kx.auth rebind flags r1..r8 = ",`char$48+flags;

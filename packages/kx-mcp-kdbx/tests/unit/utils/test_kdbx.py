@@ -4,13 +4,15 @@ import logging
 import pytest
 from kx_mcp_kdbx.utils.kdbx import (
     MalformedPrincipal,
+    _is_dead_handle,
     cleanup_kdb_connection,
     get_kdb_connection,
     kdb_sync_connection,
 )
 from kx_mcp_kdbx.utils.denial import is_denial
 from kx_mcp_kdbx.settings import KDBConfig
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
+from pykx.exceptions import QError
 
 
 class TestGetKdbConnection:
@@ -112,11 +114,11 @@ class TestKdbSyncConnection:
 
         # Assert
         assert result == mock_conn
-        assert "KDB-X connectivity attempt 1/3 failed: Connection failed" in caplog.text
+        assert "KDB-X connectivity attempt 1/4 failed: Connection failed" in caplog.text  # retry=3: 4 attempts
         assert call_count == 2
 
     def test_kdb_sync_connection_all_attempts_fail(self, mocker, caplog):
-        """Test KDB connection fails after all retry attempts."""
+        """Test KDB connection fails after the first attempt and all `retry` retries."""
         # Arrange
         caplog.set_level(logging.INFO)
         cleanup_kdb_connection()  # Clear cache
@@ -131,9 +133,9 @@ class TestKdbSyncConnection:
 
         # Assert
         assert "Failed to connect to KDB" in caplog.text
-        assert "KDB-X connectivity attempt 1/2 failed: Connection failed" in caplog.text
-        assert "KDB-X connectivity attempt 2/2 failed: Connection failed" in caplog.text
-        assert mock_kx.SyncQConnection.call_count == 2
+        assert "KDB-X connectivity attempt 1/3 failed: Connection failed" in caplog.text
+        assert "KDB-X connectivity attempt 3/3 failed: Connection failed" in caplog.text
+        assert mock_kx.SyncQConnection.call_count == 3
 
     def test_kdb_sync_connection_uses_default_config(self, mocker, caplog):
         """Test KDB connection uses default config when none provided."""
@@ -373,8 +375,8 @@ class TestIdentityAssertion:
         actually a malformed token. A dict/list `sub` failed even earlier and more obscurely, as
         `TypeError: unhashable type` from the connection cache key.
 
-        Refused Python-side rather than in q on purpose: `public/modules/kx/auth/` is frozen here and
-        canonical in the `kx-auth` repo, so hardening `promote` belongs there (recorded as an ask).
+        Refused Python-side rather than in q on purpose: the `kx.auth` q module is canonical in the
+        `kx-auth` repo, not this one, so hardening `promote` belongs there (recorded as an ask).
         """
         cfg = KDBConfig(assert_identity=True, username="svc", password="pw")
         sync = mocker.patch("kx_mcp_kdbx.utils.kdbx.kdb_sync_connection")
@@ -412,6 +414,45 @@ class TestKDBConfigM4:
     def test_missing_password_file_is_ignored(self, tmp_path):
         cfg = KDBConfig(_env_file=None, password_file=str(tmp_path / "nope"), password=SecretStr("env-pw"))
         assert cfg.password.get_secret_value() == "env-pw"
+
+
+class TestDeadHandleClassification:
+    """Which probe errors mean "reopen the handle" and which mean "q said no".
+
+    The real-host tests in `tests/integration/test_kdbx_connection_lifecycle.py` cover a peer that
+    went away over plain TCP. The TLS path's QError texts and a failed socket write are not cheap to
+    provoke against a real host, so the classification itself is pinned here.
+    """
+
+    @pytest.mark.parametrize("exc", [
+        RuntimeError("Attempted to use a closed IPC connection"),
+        RuntimeError("KDB-X Python attempted to process a message containing less than the "
+                     "expected number of bytes, connection closed."),
+        RuntimeError("Failed to send query on IPC socket: '[Errno 32] Broken pipe'"),
+        ConnectionResetError(54, "Connection reset by peer"),
+        QError("snd handle 5"),  # the TLS path, where q owns the handle
+        QError("write to handle 5. OS reports: Broken pipe"),
+    ])
+    def test_dead_handle(self, exc):
+        assert _is_dead_handle(exc, conn=None)
+
+    @pytest.mark.parametrize("exc", [
+        QError("denied"),
+        QError("type"),
+        QError("Query timed out"),  # slow, not dead: reopening would resend a slow query
+        QError("hop. OS reports: Connection refused"),  # a failed *open*, not a dead handle
+        ValueError("cannot send"),
+    ])
+    def test_live_handle(self, exc):
+        assert not _is_dead_handle(exc, conn=None)
+
+
+class TestRetryConfig:
+    """`KDBX_DB_RETRY` counts retries, so it cannot be negative."""
+
+    def test_negative_retry_is_rejected(self):
+        with pytest.raises(ValidationError):
+            KDBConfig(_env_file=None, retry=-1)
 
 
 class TestCleanupKdbConnection:

@@ -29,9 +29,12 @@ trades:([]
   size : 100 250 75 500 40 120 300 60 450 35
  );
 
-// --- identity assertion (the kx.auth KDB-X module) ------------------------------------------------
+// --- identity assertion + the peer policy engine (the kx.auth / kx.rbac KDB-X modules) -----------
 // MUST assign to the global `.kx.auth` so the container's qIPC call `.kx.auth.bind` resolves.
+// Both peers are resolved from the q module path; they are canonical in the kx-auth repo and are NOT
+// vendored here — `just install-modules` puts them on $QPATH.
 .kx.auth:use`kx.auth;
+.kx.rbac:use`kx.rbac;
 
 // The service-account login the container connects as (KDBX_DB_USERNAME) — q's own -U userpass
 // file is the connection gate; WHO may then assert an identity is a policy grant below (bind[]
@@ -40,22 +43,27 @@ trades:([]
 
 .kx.auth.activate[];
 
-// --- authorization policy (the data-level S/A/R seam) ----------------------------------------------
-// Group x resource x action grant: the real Keycloak `trader` group may read+write `data.trades`. Groups
-// are extracted by .kx.auth.promote from the asserted principal's claims (top-level `groups` claim,
-// the default search order) — the policy keys on membership, not a per-username allow-list.
-.ferry.grants:([] grp:`trader`trader; res:`data.trades`data.trades; act:`read`write);
-// Admin grant (the bind[] assert gate): the service-account LOGIN (.z.u, carried as `sub) may
-// `assert on `kx.identity. Keyed on the user, not a group.
-.ferry.adminGrants:([] usr:enlist .ferry.svcUser; act:enlist `assert; res:enlist `kx.identity);
+// --- login groups: the service account's own identity ---------------------------------------------
+// A kdb+ login carries no IdP groups, which is the only reason the assert grant ever needed its own
+// `usr`-keyed table — a policy-layer patch for an identity-layer gap. The module's login->groups map
+// closes it, so the assert grant is an ordinary group-keyed row. An unmapped login matches nothing.
+.kx.auth.setLoginGroups[(enlist .ferry.svcUser)!enlist `superUsers];
 
-.ferry.allowed:{[p;a;r]
-  acts:$[`read~a; `read`write`delete; enlist a];
-  byGroup:0<count select from .ferry.grants      where grp in p`groups, res=r, act in acts;
-  byUser: 0<count select from .ferry.adminGrants where usr=p`sub, res=r, act=a;
-  byGroup or byUser };
+// --- authorization policy: ONE grant table, ONE engine (the peer kx.rbac module) -------------------
+// No host-written decision function: kx.rbac decides. Groups stay the principal key — .kx.auth.promote
+// extracts them from the real Keycloak principal's top-level `groups` claim (the default search
+// order) — so the policy keys on membership, not a per-username allow-list.
+//
+// NB the hand-rolled policy this replaces made a write/delete grant IMPLY read. kx.rbac has no verb
+// subsumption by design (pinned absent by its own `noVerbSubsumption` regression). Not a behaviour
+// change here: both verbs are granted explicitly below, so every decision is unchanged.
+.kx.rbac.grant[`trader; `read;  `data.trades];
+.kx.rbac.grant[`trader; `write; `data.trades];
+// ASSERT grant (the bind[] gate): the service account's tier may assert an identity.
+.kx.rbac.grant[`superUsers; `assert; `kx.identity];
 
-.kx.auth.setPolicy[.ferry.allowed];
+// Install the peer engine's scalar decision function — explicit, so a bare `use` changes nothing.
+.kx.auth.setPolicy .kx.rbac.policy[];
 
 // Gate every SQL query the kdbx tool runs through the seam (fixed to `read;`data.trades — the lesson is
 // the seam, not SQL parsing, same simplification the demo makes).
@@ -63,4 +71,5 @@ trades:([]
 .s.e:{[x] .kx.auth.authorize[`read;`data.trades]; .s.realE x};
 
 -1 "";
--1 "kdbx_ferry_host ready: identity assertion ON, `trader may read+write `data.trades, default-deny";
+-1 "kdbx_ferry_host ready: identity assertion ON, kx.rbac installed — ",(string count .kx.rbac.grants[])," grants";
+-1 "  `trader may read+write `data.trades; `superUsers may `assert `kx.identity; default-deny";

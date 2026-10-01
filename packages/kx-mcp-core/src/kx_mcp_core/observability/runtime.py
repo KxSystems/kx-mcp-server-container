@@ -54,6 +54,9 @@ THREADS = metric(
     "Live threads in the process. Rises with the worker pools behind sync tool bodies, "
     "embedding-model inference, and outbound token minting.",
 )
+# Read at scrape time, not sampled: the sampler only starts on the first dispatch, so a set()-driven
+# gauge would report 0 until then. `active_count` is cheap and always >= 1 (the main thread).
+THREADS.set_function(threading.active_count)
 
 BUILD_INFO = metric(
     Info,
@@ -83,7 +86,7 @@ def set_build_info() -> None:
 
 
 async def _monitor() -> None:
-    """Sample loop lag and thread count until cancelled.
+    """Sample event-loop lag until cancelled (the thread gauge is read at scrape time).
 
     Lag is the overshoot of a plain ``sleep``: ask to be woken at a known time and measure how much
     later it actually happened. Anything blocking the loop — a synchronous qIPC round-trip, model
@@ -100,7 +103,6 @@ async def _monitor() -> None:
         lag = max(0.0, loop.time() - expected)
         try:
             EVENT_LOOP_LAG.observe(lag)
-            THREADS.set(threading.active_count())
         except Exception as exc:  # a broken collector must not kill the monitor
             logger.debug("runtime sample failed: %s", exc)
 

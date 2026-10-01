@@ -23,7 +23,10 @@ from kx_mcp_kdbx.utils.observe import q
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_AIMETA_SCHEMA_VERSION = 2
+# aimeta v0.2.x publishes schemaVersion 2, v0.3.x schemaVersion 3. Version 3 only adds an optional
+# `functions[].authorize {action, resource}`, but aimeta's schema is closed
+# (`additionalProperties: false`), so each version is validated against its own vendored copy.
+SUPPORTED_AIMETA_SCHEMA_VERSIONS = (2, 3)
 AIMETA_PRESENCE_PROBE = "@[{100h~type get x};`.aimeta.data;{0b}]"
 
 _TABLE_OPTIONAL = frozenset({"reference", "labels", "sampleData", "tags"})
@@ -126,9 +129,9 @@ def scrub_ipc_artifacts(document: dict[str, Any]) -> dict[str, Any]:
     return scrubbed
 
 
-@lru_cache(maxsize=1)
-def _schema() -> dict[str, Any]:
-    path = files("kx_mcp_kdbx.schemas").joinpath("aimeta-v2.schema.json")
+@lru_cache(maxsize=len(SUPPORTED_AIMETA_SCHEMA_VERSIONS))
+def _schema(version: int) -> dict[str, Any]:
+    path = files("kx_mcp_kdbx.schemas").joinpath(f"aimeta-v{version}.schema.json")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -173,17 +176,19 @@ def classify_document(document: dict[str, Any] | None) -> MetadataDetection:
         return MetadataDetection(None, 1, "unavailable", "native")
 
     version = document.get("schemaVersion")
-    if version != SUPPORTED_AIMETA_SCHEMA_VERSION:
+    # `type(...) is int`: `True == 1` and `2.0 == 2`, so a bare `in` would accept a bool or float.
+    if type(version) is not int or version not in SUPPORTED_AIMETA_SCHEMA_VERSIONS:
+        expected = " or ".join(str(v) for v in SUPPORTED_AIMETA_SCHEMA_VERSIONS)
         return MetadataDetection(
             None,
             1,
             "unsupported_schema",
             "native",
-            f"aimeta schemaVersion {version!r} is unsupported; expected 2",
+            f"aimeta schemaVersion {version!r} is unsupported; expected {expected}",
         )
 
     errors = sorted(
-        Draft202012Validator(_schema()).iter_errors(document),
+        Draft202012Validator(_schema(version)).iter_errors(document),
         key=lambda e: list(e.path),
     )
     if errors:

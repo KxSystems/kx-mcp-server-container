@@ -1251,3 +1251,31 @@ def test_span_is_not_a_contextlib_wrapper():
     from opentelemetry.util._decorator import _AgnosticContextManager
 
     assert isinstance(span("acme.probe"), _AgnosticContextManager)
+
+
+@pytest.mark.parametrize(
+    "endpoint, expected",
+    [
+        ("http://collector:4318", ("collector", 4318)),
+        ("https://collector", ("collector", 443)),
+        ("http://collector", ("collector", 80)),
+        ("collector:4317", ("collector", 4317)),
+        ("collector", ("collector", 4317)),
+    ],
+)
+def test_probe_target_handles_http_and_grpc_forms(endpoint, expected):
+    host, port, _ = tracing_mod._probe_target(endpoint)
+    assert (host, port) == expected
+
+
+def test_probe_target_defaults_when_unset(monkeypatch):
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", raising=False)
+    assert tracing_mod._probe_target(None)[:2] == ("localhost", 4317)
+
+
+
+def test_probe_target_display_carries_no_credentials():
+    """The warning quotes the endpoint; userinfo, path and query (where secrets sit) must not leak."""
+    _, _, shown = tracing_mod._probe_target("http://user:hunter2@collector:4318/v1/traces?token=abc")
+    assert shown == "http://collector:4318"

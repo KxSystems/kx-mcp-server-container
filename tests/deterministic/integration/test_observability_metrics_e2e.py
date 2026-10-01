@@ -322,3 +322,26 @@ def test_resource_read_fans_out_to_multiple_qipc_calls(metrics_container):
         f"expected the resource read's qIPC fan-out ({fanout_delta}) to exceed its single "
         f"dispatch count ({dispatch_delta})"
     )
+
+
+def test_documented_runtime_series_are_live_on_the_first_scrape(spawn_container):
+    """REGRESSION: `kx_mcp_threads` was set only by the sampler, which starts on the first
+    dispatch, so a fresh container's first scrape read 0. The class of bug is any documented runtime
+    series that depends on something starting later, so check every one of them, before any tool call.
+
+    The list is `docs/observability.md` § Process and runtime metrics. `kx_mcp_dispatches_in_progress`
+    (no series until a dispatch) and `kx_mcp_event_loop_lag_seconds` (ticks once a second, from the
+    first dispatch) are legitimately empty here. The `process_*` family is Linux-only.
+    """
+    url, _ = spawn_container(KX_MCP_METRICS="prometheus")
+
+    samples = _scrape(url)
+
+    assert _value(samples, "kx_mcp_threads") >= 1
+    build = [v for (name, labels), v in samples.items() if name == "kx_mcp_build_info"]
+    assert build == [1.0]
+    assert any(name == "kx_mcp_build_info" and dict(labels).get("version") for name, labels in samples)
+    assert _present(samples, "python_info")
+    if _present(samples, "process_"):  # ProcessCollector yields nothing off Linux
+        for name in ("process_resident_memory_bytes", "process_open_fds", "process_start_time_seconds"):
+            assert _value(samples, name) > 0, name

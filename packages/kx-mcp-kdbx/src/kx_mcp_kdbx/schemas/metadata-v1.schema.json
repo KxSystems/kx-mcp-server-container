@@ -24,7 +24,7 @@
         "annotationStatus": {"enum": ["unavailable", "unsupported_schema", "invalid", "compile_failed_stale", "annotated", "compile_failed", "empty", "basic", "error", "reload_failed"]},
         "annotationDetail": {"type": "string"},
         "source": {"enum": ["native", "aimeta_qipc"]},
-        "generatedAt": {"type": "string", "format": "date-time"}, "aimetaSchemaVersion": {"const": 2},
+        "generatedAt": {"type": "string", "format": "date-time"}, "aimetaSchemaVersion": {"enum": [2, 3], "description": "schemaVersion of the aimeta document this projection was built from: 2 for aimeta v0.2.x, 3 for v0.3.x."},
         "process": {"$ref": "#/$defs/process"},
         "hiddenByEntitlements": {"type": "integer", "minimum": 0, "description": "Count of tables the data gate withheld from this response — in single-table responses this includes withheld reference-resolver tables, not only listed tables."}
       }
@@ -52,8 +52,17 @@
       "type": "object", "required": ["rowCount", "partitioned", "rowSource"], "additionalProperties": false,
       "properties": {
         "rowCount": {"type": ["integer", "null"]}, "partitioned": {"type": "boolean"},
-        "rowSource": {"enum": ["preview", "sampleData", "none"]},
-        "preview": {"type": "array", "items": {"type": "object"}}
+        "rowSource": {"enum": ["preview", "sampleData", "none", "error"], "description": "Where the table's example rows come from. preview: live rows in `preview`. sampleData: illustrative annotation rows in the table's `sampleData`, also used when a preview failed. none: no preview was taken (zero rows or preview_rows requested, an unknown row count, or a listing past the preview-table cap). error: the preview was attempted and failed, and no sampleData stands in; `previewError` says why."},
+        "preview": {"type": "array", "items": {"type": "object"}},
+        "previewError": {
+          "type": "object", "required": ["code", "message"], "additionalProperties": false,
+          "description": "Present when a preview was attempted and failed, whatever `rowSource` then reports.",
+          "properties": {
+            "code": {"type": "string", "description": "non_finite_number (infinity the preview could not project to null, e.g. inside a nested column) or preview_failed (any other failure)."},
+            "message": {"type": "string"}
+          }
+        },
+        "nonFiniteAsNull": {"const": true, "description": "Present when +/-infinity in float or real columns was rendered as null in `preview`, which JSON cannot carry. Without it, a null in `preview` is a q null."}
       }
     },
     "reference": {
@@ -69,7 +78,12 @@
         "name": {"type": "string"}, "desc": {"type": "string"},
         "params": {"type": "array", "items": {"$ref": "#/$defs/param"}},
         "returns": {"$ref": "#/$defs/returns"}, "examples": {"type": "array", "items": {"type": "string"}},
-        "uses": {"type": "array", "items": {"type": "string"}}, "tags": {"type": "array", "items": {"type": "string"}}
+        "uses": {"type": "array", "items": {"type": "string"}}, "tags": {"type": "array", "items": {"type": "string"}},
+        "authorize": {
+          "type": "object", "required": ["action", "resource"], "additionalProperties": false,
+          "description": "The grant the function declares via aimeta's @authorize (aimeta v0.3.x). Informative only: it neither proves the caller holds the grant nor that the function enforces it.",
+          "properties": {"action": {"type": "string"}, "resource": {"type": "string"}}
+        }
       }
     },
     "param": {

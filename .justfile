@@ -4,6 +4,12 @@
 # snyk/sonar/publish-release — live in the dev repo's root .justfile, which does not ship.)
 set shell := ["bash", "-c"]
 
+# Where `install-modules` gets the kx.auth / kx.rbac q modules. They are canonical in the kx-auth repo
+# and deliberately not vendored here. Override with a local checkout for development:
+#   just kx_auth_src=/path/to/kx-auth install-modules
+kx_auth_src := "https://github.com/KxSystems/kx-auth.git"
+kx_auth_ref := "v0.5.0"
+
 [private]
 default:
     @just --list
@@ -56,19 +62,58 @@ typecheck:
 # the pre-push gate: lint + typecheck (matches the blocking CI job)
 check: lint typecheck
 
-# install this repo's KDB-X modules (e.g. kx.auth) into the q runtime's module path (~/.kx/mod)
-# by symlinking, so `use`kx.auth` resolves and edits are picked up live. Idempotent.
+# install the kx.auth / kx.rbac modules onto the q module path (~/.kx/mod); idempotent
 install-modules:
   #!/usr/bin/env bash
   set -euo pipefail
+  # These modules are NOT vendored in this repo — they are canonical in kx-auth. This fetches a PINNED
+  # tag and deliberately does not track a branch, so an upstream change cannot alter this repo's
+  # behaviour without a visible bump to kx_auth_ref at the top of this file.
+  #
+  # To work from a local checkout instead (symlinked, so edits are picked up live), point at the
+  # directory that holds `modules/kx`:
+  #   just kx_auth_src=/path/to/kx-auth install-modules
   mod_root="${HOME}/.kx/mod/kx"
-  src_root="$(pwd)/modules/kx"
+  src="{{ kx_auth_src }}"
   mkdir -p "$mod_root"
+
+  if [ -d "$src" ]; then
+    # A local checkout: symlink straight at it so edits land without re-running this. Same layout as a
+    # release, modules at `modules/kx` under the directory given; no other layout is probed.
+    src_root="$(cd "$src" && pwd)/modules/kx"
+    origin="$src (local checkout)"
+  else
+    # Shallow-clone the pinned tag into a cache dir. Re-cloned rather than fetched: a tag is immutable,
+    # so there is nothing to update, and a stale cache from a previous ref would silently win.
+    cache="${XDG_CACHE_HOME:-$HOME/.cache}/kx-mcp-server-container/kx-auth-{{ kx_auth_ref }}"
+    if [ ! -d "$cache/modules/kx" ]; then
+      rm -rf "$cache"
+      git clone --depth 1 --branch "{{ kx_auth_ref }}" "$src" "$cache" 2>&1 | sed 's/^/  /'
+    fi
+    src_root="$cache/modules/kx"
+    origin="$src @ {{ kx_auth_ref }}"
+  fi
+
+  if [ ! -d "$src_root" ]; then
+    echo "no modules at $src_root" >&2
+    echo "  kx.auth / kx.rbac are canonical in the kx-auth repo, not vendored here." >&2
+    echo "  For a local checkout: just kx_auth_src=/path/to/kx-auth install-modules" >&2
+    echo "  (kx_auth_src must be the directory that holds modules/kx)" >&2
+    exit 1
+  fi
+
   for d in "$src_root"/*/; do
     name="$(basename "$d")"
+    # `ln -sfn` onto a real directory links INSIDE it and leaves the old copy in use, e.g. one
+    # installed from a release tarball. Refuse rather than delete something this recipe did not make.
+    if [ -e "$mod_root/$name" ] && [ ! -L "$mod_root/$name" ]; then
+      echo "$mod_root/$name is a directory, not a link this recipe made; remove it and re-run" >&2
+      exit 1
+    fi
     ln -sfn "$d" "$mod_root/$name"
     echo "linked kx.$name -> $mod_root/$name"
   done
+  echo "  source: $origin"
 
 # update packages / add dev dependencies (dev is a default dependency-group, so plain sync pulls it)
 update:

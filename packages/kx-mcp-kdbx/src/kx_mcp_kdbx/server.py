@@ -6,6 +6,7 @@ from fastmcp import FastMCP
 from kx_mcp_kdbx.settings import AppSettings
 from kx_mcp_kdbx.addins import register_addins
 from kx_mcp_kdbx.utils.aimeta import MetadataCache, detect_metadata, metadata_guidance
+from kx_mcp_kdbx.utils.observe import q
 
 # Imported for its registration side effect: self-registers the "kdbx_rbac" capability-check authz
 # adapter on the kx_auth_core.authz registry (module-bottom register_authz_adapter call). The
@@ -70,7 +71,7 @@ class McpServer:
     def _check_kdb_connection(self):
         """Check if KDB-X service is reachable and accessible."""
         try:
-            import pykx as kx
+            import pykx  # noqa: F401 — imported only to fail here, cleanly, on a missing license
             from pykx.exceptions import QError
         except Exception as e:
             self.logger.error(f"Failed to import pykx: {e}")
@@ -78,35 +79,34 @@ class McpServer:
             self.logger.error("Set the QLIC environment variable to point to your license directory.")
             sys.exit(1)
 
-        try:
-            conn = kx.SyncQConnection(
-                host=self.db_config.host,
-                port=self.db_config.port,
-                username=self.db_config.username,
-                password=self.db_config.password.get_secret_value(),
-                timeout=self.db_config.timeout,
-                tls=self.db_config.tls,
+        from kx_mcp_kdbx.utils.kdbx import MountBudgetExhausted, _connect
 
-            )
+        try:
+            # The connect path the tools use, so it is counted in `kdbx_connects_total` and capped by
+            # the launcher's mount budget (KX_MCP_MOUNT_TIMEOUT): the connect holds the GIL, so only
+            # that cap stops a wedged host outlasting the bound. One attempt, as before: retrying
+            # here would multiply a wedged host's startup wait by KDBX_DB_RETRY + 1 wherever no
+            # budget is open (the hand-written glue, or no KX_MCP_MOUNT_TIMEOUT).
+            conn = _connect(self.db_config, retries=0)
             # Try to get kdbx version first, fall back to kdb+ version
             try:
-                kdb_version = conn('.z.v`version').py().decode('utf-8')
+                kdb_version = q(conn, 'preflight', '.z.v`version').py().decode('utf-8')
                 kdb_type = "KDB-X"
             except (QError, AttributeError):
-                kdb_version = str(conn('.z.K').py())
+                kdb_version = str(q(conn, 'preflight', '.z.K').py())
                 kdb_type = "KDB+"
 
             self.logger.info(f"KDB-X connectivity check with 'tls={self.db_config.tls}': SUCCESS - {self.db_config.host}:{self.db_config.port} is accessible. You are running {kdb_type} version: {kdb_version}")
 
             # check if sql interface is loaded on KDB-X service
-            if not conn('@[{2< count .s};(::);{0b}]').py():
+            if not q(conn, 'preflight', '@[{2< count .s};(::);{0b}]').py():
                 self.logger.error("KDB-X SQL interface check: FAILED - KDB-X service does not have the SQL interface loaded. Load it by running .s.init[] in your KDB-X Session")
                 sys.exit(1)
             else:
                 self.logger.info("KDB-X SQL interface check: SUCCESS - SQL interface is loaded")
 
             # check if AI libs are loaded on KDB-X service
-            ai_libs_available = conn('@[{2< count .ai};(::);{0b}]').py()
+            ai_libs_available = q(conn, 'preflight', '@[{2< count .ai};(::);{0b}]').py()
             if not ai_libs_available:
 
                 # check if KDB-X version supports loading AI libs as a module
@@ -149,7 +149,7 @@ class McpServer:
                         "channel in cleartext. Permitted for local/dev use, but enable TLS for "
                         "anything beyond that."
                     )
-                bind_available = conn('@[{.kx.auth.bind;1b};(::);{0b}]').py()
+                bind_available = q(conn, 'preflight', '@[{.kx.auth.bind;1b};(::);{0b}]').py()
                 if not bind_available:
                     self.logger.error(
                         "KDB-X identity assertion check: FAILED - `.kx.auth.bind` is not defined on "
@@ -165,7 +165,7 @@ class McpServer:
                 # (the one-round-trip scope-down verb). Config guarantees data_gate implies
                 # assert_identity, so this check nests here. Fail clean at startup.
                 if getattr(self.db_config, "data_gate", False):
-                    entitled_available = conn('@[{.kx.auth.entitled;1b};(::);{0b}]').py()
+                    entitled_available = q(conn, 'preflight', '@[{.kx.auth.entitled;1b};(::);{0b}]').py()
                     if not entitled_available:
                         self.logger.error(
                             "KDB-X data-entitlement gate check: FAILED - `.kx.auth.entitled` is not "
@@ -182,7 +182,7 @@ class McpServer:
 
             conn.close()
 
-        except QError as e:
+        except (QError, MountBudgetExhausted) as e:
             self.logger.error(f"KDB-X self.connectivity check with 'tls={self.db_config.tls}': FAILED - {self.db_config.host}:{self.db_config.port} ({e})")
 
             if "Connection refused" in str(e):

@@ -63,9 +63,14 @@ def enrich_widget_impl(kind: str, config: AcmeConfig | None = None):
         # This tool's success payload carries no `status` field, so there is nothing for
         # `tool_result` to inspect — `error_result` is the primitive for exactly that case: it flags
         # the dispatch `isError: true` and keeps whatever shape the payload already has. Nothing is
-        # counted or traced for the enrichment, because none happened.
+        # counted or traced for the enrichment, because none happened. The message names the valid
+        # kinds, as the sibling `list_widgets` does: a recovery hint beats a bare "error".
         return error_result(
-            {"endpoint": conn.endpoint, "kind": kind, "message": f"unknown widget kind {kind!r}."}
+            {
+                "endpoint": conn.endpoint,
+                "kind": kind,
+                "message": f"unknown widget kind {kind!r}. Valid kinds: {', '.join(conn.kinds())}.",
+            }
         )
     # Attributes are namespaced `acme.*` — never `mcp.*`, which is the boundary middleware's own
     # vocabulary — and carry only shape/outcome, never row contents or caller identity. Passing them

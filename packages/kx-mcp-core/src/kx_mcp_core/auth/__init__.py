@@ -31,6 +31,7 @@ from .authorize import (
     begin_authz_dispatch,
     configure_authz,
     end_authz_dispatch,
+    require_authz_adapter,
     stamp_authz_decision,
 )
 from .authz_settings import AuthzSettings
@@ -67,6 +68,7 @@ __all__ = [
     "AuthzSettings",
     "AuthorizationDenied",
     "configure_authz",
+    "require_authz_adapter",
     "AuthzSlot",
     "authz_decision",
     "begin_authz_dispatch",

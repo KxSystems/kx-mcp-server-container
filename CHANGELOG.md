@@ -11,6 +11,76 @@ less-frequent cadence.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-01
+
+### Security
+- `pyjwt` 2.13.0→2.15.1 to clear a batch of newly-published advisories against 2.13.0, several of
+  them Critical signature-verification findings. The development dependency floor is raised to
+  `pyjwt>=2.15.0`. The shipped packages don't declare `pyjwt`; it reaches them through `mcp[crypto]`.
+- `authlib` 1.7.2 carries a Critical signature-verification advisory
+  ([SNYK-PYTHON-AUTHLIB-20257410](https://security.snyk.io/vuln/SNYK-PYTHON-AUTHLIB-20257410)) with
+  no fixed release yet. It is ignored in `.snyk` for 30 days, expiring 2026-10-30. `authlib` arrives
+  through `fastmcp` and `kdbai-client`. FastMCP's `OAuthProxy` uses it for the upstream token
+  exchange behind the `oidc_proxy` and `entra` auth modes.
+- `urllib3` 2.7.0→2.8.0 in the lockfile to clear three newly-published advisories, two of them High
+  (improper certificate validation, unbounded resource allocation). It arrives transitively through
+  `requests`.
+
+### Changed
+- **The q identity modules come from the released [kx-auth](https://github.com/KxSystems/kx-auth)
+  v0.5.0.** `just install-modules` fetches `kx.auth` and `kx.rbac` at the pinned `kx_auth_ref`, and
+  `just kx_auth_src=/path/to/kx-auth install-modules` installs from a local checkout. The kdb-x
+  identity-assertion and data-gate hosts declare their grants through `kx.rbac`.
+- **`KDBX_DB_RETRY` counts retries**, so attempts = retry + 1. `0` now makes one attempt (it made
+  none, and every kdb-x call failed with "never attempted"); the default `2` makes up to three.
+  Negative values are rejected at startup.
+- **Env twins of launcher flags are validated like the flags.** A bad `KX_MCP_TRANSPORT` (e.g. `sse`,
+  which `--transport` refuses), `KX_MCP_LOG_LEVEL`, `KX_MCP_EXIT_ON_MOUNT_FAILURE` or
+  `KX_MCP_MOUNT_TIMEOUT` is now a usage error (exit 2). Before, it was served, ignored or a
+  traceback, so **a deployment with a typo in one of these now fails to start**. A negative
+  `--mount-timeout` is rejected instead of meaning "off".
+- **The kdb-x backend owns reconnection**; PyKX's own reconnect is off. A cached handle found dead is
+  reopened once through the counted connect path.
+- `kdbx_connects_total{outcome="ok"}` now includes the startup pre-flight, so it reads one higher.
+
+### Added
+- **Mount budget for bundles:** `kx_mcp_core.remaining_mount_budget()` returns what is left of
+  `KX_MCP_MOUNT_TIMEOUT` inside `build_server()`, so a bundle can cap its blocking calls by it.
+- **Metadata contract v1, additive:** `live.rowSource: "error"` with `live.previewError {code,
+  message}`; `live.nonFiniteAsNull`; `metadata.aimetaSchemaVersion` is `2 | 3`; function entries may
+  carry aimeta's informative `authorize {action, resource}`.
+
+### Fixed
+- **Audit:** a tool call that returns `isError: true` is audited `outcome=error`, not `ok`. The audit
+  line now uses the same classifier as the `kx_mcp_dispatches_total` label and the span.
+- **Authz:** `KX_MCP_AUTHZ=kdbx_rbac kx-mcp --bundles kdbx` starts. The mode used to be checked
+  before the bundle that registers its adapter was imported. A mode with no registered adapter still
+  refuses to start, and so does a mode whose providing backend fails to mount, instead of denying
+  every gated call at runtime.
+- **Mount timeout:** a wedged kdb-x connect no longer outlasts `KX_MCP_MOUNT_TIMEOUT`. The connect is
+  capped by the mount budget, and the give-up log reports the real elapsed time
+  (`gave up after 32.1s (KX_MCP_MOUNT_TIMEOUT=3.0s)`) rather than the configured bound. A backend
+  that finishes late is mounted, with an overrun warning.
+- **KDB-X metrics:** a backend restart is counted in `kdbx_reconnects_total`, and a refused reopen in
+  `kdbx_connects_total{outcome="failed"}`. PyKX used to reopen silently, so neither was.
+- **KDB-X metrics:** every qIPC round trip is counted and spanned, including the batched `meta` call
+  (op `meta`), PyKX's `tables` helper (which sent two messages) and the startup pre-flight's checks
+  (new op `preflight`). A three-table `tables://kdbx/all` is 8 round trips; observability.md is
+  corrected.
+- **KDB-X metadata:** a table with float infinities previews its rows, with ±inf shown as null and
+  flagged `nonFiniteAsNull`. Any other preview failure is reported as `rowSource: "error"` with a
+  `previewError`, not a silent `"none"`. Keyed tables preview; they always failed before.
+- **KDB-X metadata:** aimeta v0.3.x (schemaVersion 3) is accepted alongside v0.2.x. Each document is
+  validated against its own version's schema. The README names the supported range.
+- **Observability:** `kx_mcp_threads` reports the live thread count from the first scrape, not 0
+  until the first dispatch.
+- **Observability:** an unreachable OTLP endpoint is reported. A best-effort, non-blocking check at
+  tracing start-up logs `serving without traces until it becomes reachable`, and WARNING-and-above
+  records from `opentelemetry.*` are no longer filtered out.
+- **Docs:** README agrees with deployment.md that a lone backend which does not come up exits
+  non-zero.
+- **Demo:** the Acme `enrich_widget` error for an unknown kind lists the valid kinds.
+
 ## [0.5.0b2] - 2026-09-24
 
 ### Added

@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 
 _BRAND = "kx_mcp"  # the shared import prefix: kx_mcp, kx_mcp.audit, kx_mcp_core.*, bundles, …
+_OTEL = "opentelemetry"  # the SDK / exporter's own loggers; their export-failure warnings must surface
 _HANDLER_TAG = "_kx_mcp_handler"  # marks our handler so configure_logging() is idempotent
 
 
@@ -34,11 +35,17 @@ class _BrandFilter(logging.Filter):
 
     Covers the dotted children (``kx_mcp.audit``) *and* the underscore sibling trees the backend
     bundles log under (``kx_mcp_kdbai.server`` etc.) — so the one root handler serves them all while
-    third-party records propagating to root are dropped.
+    third-party records propagating to root are dropped. The one exception is WARNING and above from
+    ``opentelemetry.*``: with an unreachable collector the exporter's own retry/failure warnings are
+    the only signal that spans are being lost, so hiding them leaves the operator blind.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return record.name == _BRAND or record.name.startswith(_BRAND)
+        if record.name == _BRAND or record.name.startswith(_BRAND):
+            return True
+        return record.levelno >= logging.WARNING and (
+            record.name == _OTEL or record.name.startswith(_OTEL + ".")
+        )
 
 
 def configure_logging(level: str = "INFO") -> None:

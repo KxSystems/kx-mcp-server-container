@@ -24,23 +24,16 @@ class _Value:
         return self.value
 
 
-class _Tables:
-    def __init__(self, names):
-        self.names = names
-
-    def __call__(self, _namespace):
-        return _Value(self.names)
-
-
 _META_ROWS = [{"c": "sym", "t": "s", "f": "", "a": "g"}]
 
 
 class FakeConn:
     def __init__(self, names):
         self.names = names
-        self.tables = _Tables(names)
 
     def __call__(self, query, *args):
+        if query == "tables[]":
+            return _Value(self.names)
         if query == _ROW_COUNTS:
             return _Value(json.dumps({name: 1 for name in args[0]}))
         if query == _PREVIEW:

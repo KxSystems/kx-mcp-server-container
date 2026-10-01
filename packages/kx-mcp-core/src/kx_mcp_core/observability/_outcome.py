@@ -1,4 +1,4 @@
-"""Classify a dispatch's outcome — shared by the metrics + tracing middleware.
+"""Classify a dispatch's outcome — shared by the metrics + tracing middleware and the audit line.
 
 One function so the counter's ``outcome`` label, the span's ``mcp.outcome`` attribute, and the audit
 line can never disagree about the same dispatch. The three values:

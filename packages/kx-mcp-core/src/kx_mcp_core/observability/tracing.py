@@ -19,7 +19,11 @@ imports and the container still serves, and :func:`init_tracing` reports the mis
 from __future__ import annotations
 
 import logging
+import os
+import socket
+import threading
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 
@@ -40,9 +44,66 @@ ATTR_OUTCOME = "mcp.outcome"
 ATTR_AUTHZ_DECISION = "mcp.authz.decision"
 ATTR_AUTHZ_ADAPTER = "mcp.authz.adapter"
 
+# How long the startup reachability probe waits for a TCP connect before calling the collector unreachable.
+_PROBE_TIMEOUT_SECONDS = 2.0
+_DEFAULT_OTLP_HOSTPORT = ("localhost", 4317)  # the gRPC exporter's own default
+
 # Set once by init_tracing so a second call is a no-op (the launcher and hand-written glue may both
 # reach it, and installing two TracerProviders would drop spans on the floor).
 _initialised = False
+
+
+def _probe_target(endpoint: Optional[str]) -> tuple[str, int, str]:
+    """Resolve ``(host, port, display)`` for the collector the exporter will contact.
+
+    Accepts the http(s) and bare ``host:port`` (gRPC) forms; a missing port takes the scheme's default
+    (80 / 443) or the OTLP gRPC port 4317 for a bare host. ``display`` is ``scheme://host:port`` only,
+    so userinfo, path and query (where credentials could sit) never reach a log line.
+    """
+    endpoint = (
+        endpoint
+        or os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    )
+    if not endpoint:
+        host, port = _DEFAULT_OTLP_HOSTPORT
+        return host, port, f"{host}:{port}"
+    parts = urlsplit(endpoint if "//" in endpoint else f"//{endpoint}")
+    host = parts.hostname or _DEFAULT_OTLP_HOSTPORT[0]
+    scheme = parts.scheme.lower()
+    port = parts.port or {"http": 80, "https": 443}.get(scheme, _DEFAULT_OTLP_HOSTPORT[1])
+    shown_host = f"[{host}]" if ":" in host else host
+    return host, port, f"{scheme + '://' if scheme else ''}{shown_host}:{port}"
+
+
+def _probe_collector(endpoint: Optional[str]) -> None:
+    """Best-effort TCP connect to the collector; warn if it cannot be reached. Runs off-thread.
+
+    Exporter construction never contacts the endpoint, so this is the only startup-time signal that
+    spans have nowhere to go. It proves the port accepts connections, not that OTLP is spoken there.
+    Never raises: it must not disturb a container that is otherwise serving.
+    """
+    try:
+        host, port, shown = _probe_target(endpoint)
+        try:
+            with socket.create_connection((host, port), timeout=_PROBE_TIMEOUT_SECONDS):
+                return
+        except OSError as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+        logger.warning(
+            "OTLP endpoint %s is unreachable (%s); serving without traces until it becomes reachable",
+            shown,
+            reason,
+        )
+    except Exception as exc:  # pragma: no cover - a probe bug must never surface
+        logger.debug("OTLP reachability probe failed to run: %s", exc)
+
+
+def _start_reachability_probe(endpoint: Optional[str]) -> None:
+    """Run :func:`_probe_collector` on a daemon thread so startup is never delayed or held open."""
+    threading.Thread(
+        target=_probe_collector, args=(endpoint,), name="kx-mcp-otlp-probe", daemon=True
+    ).start()
 
 
 def init_tracing(settings) -> bool:
@@ -51,7 +112,11 @@ def init_tracing(settings) -> bool:
     No-op (returns False) when ``KX_MCP_TRACING`` is off, and idempotent when called more than once.
     Every ``opentelemetry`` import happens *inside* this function — see the module docstring.
 
-    A failure to construct the exporter (an unresolvable endpoint, a missing optional dependency) is
+    Constructing the exporter never contacts the collector, so an unreachable endpoint is not a setup
+    failure; a background TCP probe (:func:`_probe_collector`) warns about it instead, and the
+    exporter's own warnings follow once spans are dropped.
+
+    A failure to construct the exporter (a bad config, a missing optional dependency) is
     logged and swallowed: telemetry is not worth taking the container down for, which is the same
     posture ``try_mount_bundle`` takes for a backend that won't come up.
     """
@@ -104,6 +169,7 @@ def init_tracing(settings) -> bool:
         return False
 
     _initialised = True
+    _start_reachability_probe(settings.otlp_endpoint)
     logger.info(
         "tracing enabled: exporter=otlp endpoint=%s service.name=%s",
         settings.otlp_endpoint or "(SDK default)",

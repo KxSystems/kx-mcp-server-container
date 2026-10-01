@@ -11,9 +11,8 @@ Install it when you are **assembling an MCP server** from KX backend bundles:
 uv add kx-mcp-core kx-mcp-kdbx        # from PyPI
 ```
 
-> **On PyPI as a pre-release.** `0.5.0b1` is published as a PEP 440 pre-release, so an unpinned
-> install resolves it only while no final release exists — pin `kx-mcp-core==0.5.0b1` if you need
-> that exact version. See the
+> All the packages version in lockstep; pin them together (`kx-mcp-core==0.5.0`) when you depend on
+> a version. See the
 > [deployment guide](https://github.com/KxSystems/kx-mcp-server-container/blob/main/docs/deployment.md#quickstart--three-ways-to-run-it).
 
 ## What's in the box
